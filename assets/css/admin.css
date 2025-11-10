@@ -1,0 +1,235 @@
+/**
+ * YoCo Backorder System Admin Styles
+ */
+
+.yoco-suppliers-wrapper {
+    display: flex;
+    gap: 20px;
+    margin-top: 20px;
+}
+
+.yoco-suppliers-list {
+    flex: 0 0 300px;
+}
+
+.yoco-supplier-config {
+    flex: 1;
+}
+
+.supplier-item {
+    padding: 10px;
+    margin: 5px 0;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    transition: all 0.2s ease;
+}
+
+.supplier-item:hover {
+    border-color: #0073aa;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.supplier-item.active {
+    background: #f0f8ff;
+    border-color: #0073aa;
+}
+
+.yoco-supplier-stock-info {
+    margin: 10px 0;
+    padding: 10px;
+    background: #f9f9f9;
+    border-left: 3px solid #2196F3;
+    border-radius: 0 3px 3px 0;
+}
+
+.yoco-supplier-stock-info h4 {
+    margin: 0 0 10px 0;
+    color: #333;
+}
+
+.yoco-dashboard-stats {
+    display: flex;
+    gap: 20px;
+    margin: 20px 0;
+}
+
+.yoco-dashboard-stats .card {
+    flex: 1;
+    padding: 20px;
+}
+
+.yoco-dashboard-stats .card h2 {
+    margin-top: 0;
+    margin-bottom: 15px;
+    color: #333;
+}
+
+.time-input {
+    margin: 5px 0;
+    display: flex;
+    align-items: center;
+}
+
+.time-input input[type="time"] {
+    margin-right: 10px;
+}
+
+#feed-test-result {
+    margin-top: 10px;
+}
+
+#feed-test-result .success {
+    background: #d4edda;
+    border: 1px solid #c3e6cb;
+    color: #155724;
+    padding: 10px;
+    border-radius: 3px;
+}
+
+#feed-test-result .error {
+    background: #f8d7da;
+    border: 1px solid #f5c6cb;
+    color: #721c24;
+    padding: 10px;
+    border-radius: 3px;
+}
+
+#csv-mapping {
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    padding: 15px;
+    border-radius: 3px;
+    margin: 10px 0;
+}
+
+#csv-mapping label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 600;
+}
+
+#csv-mapping input[type="text"] {
+    width: 200px;
+}
+
+.yoco-status-indicator {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 5px;
+}
+
+.yoco-status-active {
+    background-color: #46b450;
+}
+
+.yoco-status-inactive {
+    background-color: #dc3232;
+}
+
+.yoco-status-warning {
+    background-color: #ffb900;
+}
+
+.yoco-check-stock {
+    margin-top: 10px;
+}
+
+/* Product list columns */
+.column-yoco_backorder,
+.column-yoco_supplier_stock {
+    width: 120px;
+}
+
+/* Loading states */
+.yoco-loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.yoco-spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid #f3f3f3;
+    border-top: 2px solid #0073aa;
+    border-radius: 50%;
+    animation: yoco-spin 1s linear infinite;
+    margin-right: 5px;
+}
+
+@keyframes yoco-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Responsive design */
+@media (max-width: 1200px) {
+    .yoco-suppliers-wrapper {
+        flex-direction: column;
+    }
+    
+    .yoco-suppliers-list {
+        flex: none;
+    }
+    
+    .yoco-dashboard-stats {
+        flex-wrap: wrap;
+    }
+    
+    .yoco-dashboard-stats .card {
+        min-width: 280px;
+    }
+}
+
+@media (max-width: 768px) {
+    .yoco-dashboard-stats {
+        flex-direction: column;
+    }
+    
+    .supplier-item {
+        font-size: 14px;
+    }
+    
+    .time-input {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .time-input input[type="time"] {
+        margin-bottom: 5px;
+        margin-right: 0;
+    }
+}
+
+/* Admin notices within plugin */
+.yoco-notice {
+    padding: 10px 15px;
+    margin: 15px 0;
+    border-radius: 3px;
+}
+
+.yoco-notice.success {
+    background-color: #d4edda;
+    border-color: #c3e6cb;
+    color: #155724;
+}
+
+.yoco-notice.error {
+    background-color: #f8d7da;
+    border-color: #f5c6cb;
+    color: #721c24;
+}
+
+.yoco-notice.warning {
+    background-color: #fff3cd;
+    border-color: #ffeaa7;
+    color: #856404;
+}
+
+.yoco-notice.info {
+    background-color: #d1ecf1;
+    border-color: #bee5eb;
+    color: #0c5460;
+}
