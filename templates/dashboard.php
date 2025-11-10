@@ -31,10 +31,44 @@ foreach ($suppliers as $supplier) {
     }
 }
 
-// Get product stats
+// Get product stats - with debug info
 global $wpdb;
-$total_products = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = '_yoco_backorder_enabled' AND meta_value = 'yes'");
+
+// Debug: Show what we're looking for
+echo '<div style="background: #fff3cd; padding: 10px; margin: 10px 0; border: 1px solid #ffeaa7;">';
+echo '<h4>YoCo Debug Info:</h4>';
+
+// Check if our database tables exist
+$tables_exist = array();
+$schema = array(
+    'supplier_settings' => $wpdb->prefix . 'yoco_supplier_settings',
+    'supplier_stock' => $wpdb->prefix . 'yoco_supplier_stock', 
+    'sync_logs' => $wpdb->prefix . 'yoco_sync_logs'
+);
+
+foreach ($schema as $name => $table) {
+    $exists = $wpdb->get_var("SHOW TABLES LIKE '{$table}'");
+    $tables_exist[$name] = !empty($exists);
+    echo "Table {$name}: " . ($tables_exist[$name] ? '✅ EXISTS' : '❌ MISSING') . "<br>";
+}
+
+// Debug the product count query
+$debug_query = "SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = '_yoco_backorder_enabled' AND meta_value = 'yes'";
+echo "<br><strong>Product Query:</strong><br><code>{$debug_query}</code><br>";
+
+$total_products = $wpdb->get_var($debug_query);
+echo "<strong>Result:</strong> {$total_products} products found<br>";
+
+// Show some actual meta values to debug
+$sample_meta = $wpdb->get_results("SELECT post_id, meta_key, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_yoco_backorder_enabled' LIMIT 5", ARRAY_A);
+echo "<br><strong>Sample meta data:</strong><br>";
+foreach ($sample_meta as $meta) {
+    echo "Post ID {$meta['post_id']}: {$meta['meta_key']} = '{$meta['meta_value']}'<br>";
+}
+
 $products_with_stock = $wpdb->get_var("SELECT COUNT(DISTINCT product_id) FROM {$wpdb->prefix}yoco_supplier_stock WHERE stock_quantity > 0");
+
+echo "</div>";
 ?>
 
 <div class="wrap">
