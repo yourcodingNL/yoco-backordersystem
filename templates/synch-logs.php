@@ -15,8 +15,11 @@ $offset = ($page - 1) * $per_page;
 // Get supplier filter
 $supplier_filter = isset($_GET['supplier']) ? intval($_GET['supplier']) : null;
 
-// Get logs
-$logs = YoCo_Sync::get_sync_logs($supplier_filter, $per_page + 1); // Get one extra to check if there are more
+// Get logs - with safety checks
+$logs = array();
+if (class_exists('YoCo_Sync') && method_exists('YoCo_Sync', 'get_sync_logs')) {
+    $logs = YoCo_Sync::get_sync_logs($supplier_filter, $per_page + 1); // Get one extra to check if there are more
+}
 
 // Check if we have more logs
 $has_more = count($logs) > $per_page;
@@ -24,8 +27,11 @@ if ($has_more) {
     array_pop($logs); // Remove the extra log
 }
 
-// Get suppliers for filter
-$suppliers = YoCo_Supplier::get_suppliers();
+// Get suppliers for filter - with safety check
+$suppliers = array();
+if (class_exists('YoCo_Supplier') && method_exists('YoCo_Supplier', 'get_suppliers')) {
+    $suppliers = YoCo_Supplier::get_suppliers();
+}
 ?>
 
 <div class="wrap">

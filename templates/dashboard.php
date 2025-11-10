@@ -7,9 +7,17 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Get stats
-$suppliers = YoCo_Supplier::get_suppliers();
-$recent_logs = YoCo_Sync::get_sync_logs(null, 10);
+// Get stats - with safety checks
+$suppliers = array();
+$recent_logs = array();
+
+if (class_exists('YoCo_Supplier') && method_exists('YoCo_Supplier', 'get_suppliers')) {
+    $suppliers = YoCo_Supplier::get_suppliers();
+}
+
+if (class_exists('YoCo_Sync') && method_exists('YoCo_Sync', 'get_sync_logs')) {
+    $recent_logs = YoCo_Sync::get_sync_logs(null, 10);
+}
 
 // Count active suppliers
 $active_suppliers = 0;

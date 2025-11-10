@@ -30,8 +30,11 @@ if (isset($_POST['save_supplier']) && wp_verify_nonce($_POST['yoco_nonce'], 'yoc
     }
 }
 
-// Get suppliers
-$suppliers = YoCo_Supplier::get_suppliers();
+// Get suppliers - with safety check
+$suppliers = array();
+if (class_exists('YoCo_Supplier') && method_exists('YoCo_Supplier', 'get_suppliers')) {
+    $suppliers = YoCo_Supplier::get_suppliers();
+}
 $current_supplier_id = isset($_GET['supplier']) ? intval($_GET['supplier']) : null;
 $current_supplier = null;
 

@@ -180,11 +180,14 @@ $debug_mode = get_option('yoco_debug_mode', 'no');
                         <td><?php _e('Configured Suppliers', 'yoco-backorder'); ?></td>
                         <td>
                             <?php
-                            $suppliers = YoCo_Supplier::get_suppliers();
+                            $suppliers = array();
                             $configured = 0;
-                            foreach ($suppliers as $supplier) {
-                                if (!empty($supplier['settings']['feed_url'])) {
-                                    $configured++;
+                            if (class_exists('YoCo_Supplier') && method_exists('YoCo_Supplier', 'get_suppliers')) {
+                                $suppliers = YoCo_Supplier::get_suppliers();
+                                foreach ($suppliers as $supplier) {
+                                    if (!empty($supplier['settings']['feed_url'])) {
+                                        $configured++;
+                                    }
                                 }
                             }
                             ?>
