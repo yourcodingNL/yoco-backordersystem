@@ -82,6 +82,15 @@ class YoCo_Admin {
         
         add_submenu_page(
             'yoco-backorder',
+            __('Bulk Product Setup', 'yoco-backorder'),
+            __('Bulk Product Setup', 'yoco-backorder'),
+            'manage_woocommerce',
+            'yoco-bulk-products',
+            array($this, 'bulk_products_page')
+        );
+        
+        add_submenu_page(
+            'yoco-backorder',
             __('Sync Logs', 'yoco-backorder'),
             __('Sync Logs', 'yoco-backorder'),
             'manage_woocommerce',
@@ -152,28 +161,60 @@ class YoCo_Admin {
      * Dashboard page
      */
     public function dashboard_page() {
-        include YOCO_BACKORDER_PLUGIN_DIR . 'templates/admin/dashboard.php';
+        $template_file = YOCO_BACKORDER_PLUGIN_DIR . 'templates/admin/dashboard.php';
+        if (file_exists($template_file)) {
+            include $template_file;
+        } else {
+            echo '<div class="wrap"><h1>YoCo Dashboard</h1><p>Template file not found.</p></div>';
+        }
     }
     
     /**
      * Suppliers page
      */
     public function suppliers_page() {
-        include YOCO_BACKORDER_PLUGIN_DIR . 'templates/admin/suppliers.php';
+        $template_file = YOCO_BACKORDER_PLUGIN_DIR . 'templates/admin/suppliers.php';
+        if (file_exists($template_file)) {
+            include $template_file;
+        } else {
+            echo '<div class="wrap"><h1>YoCo Suppliers</h1><p>Template file not found.</p></div>';
+        }
     }
     
     /**
      * Sync logs page
      */
     public function sync_logs_page() {
-        include YOCO_BACKORDER_PLUGIN_DIR . 'templates/admin/sync-logs.php';
+        $template_file = YOCO_BACKORDER_PLUGIN_DIR . 'templates/admin/sync-logs.php';
+        if (file_exists($template_file)) {
+            include $template_file;
+        } else {
+            echo '<div class="wrap"><h1>YoCo Sync Logs</h1><p>Template file not found.</p></div>';
+        }
     }
     
     /**
      * Settings page
      */
     public function settings_page() {
-        include YOCO_BACKORDER_PLUGIN_DIR . 'templates/admin/settings.php';
+        $template_file = YOCO_BACKORDER_PLUGIN_DIR . 'templates/admin/settings.php';
+        if (file_exists($template_file)) {
+            include $template_file;
+        } else {
+            echo '<div class="wrap"><h1>YoCo Settings</h1><p>Template file not found.</p></div>';
+        }
+    }
+    
+    /**
+     * Bulk products page
+     */
+    public function bulk_products_page() {
+        $template_file = YOCO_BACKORDER_PLUGIN_DIR . 'templates/admin/bulk-products.php';
+        if (file_exists($template_file)) {
+            include $template_file;
+        } else {
+            echo '<div class="wrap"><h1>YoCo Bulk Products</h1><p>Template file not found.</p></div>';
+        }
     }
     
     /**

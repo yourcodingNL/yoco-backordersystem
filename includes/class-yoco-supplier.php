@@ -95,6 +95,16 @@ class YoCo_Supplier {
         
         $table = $wpdb->prefix . 'yoco_supplier_settings';
         
+        // Debug: Log what we're trying to save
+        error_log("YOCO: Trying to save supplier {$term_id} with settings: " . print_r($settings, true));
+        
+        // Check if table exists
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$table}'");
+        if (!$table_exists) {
+            error_log("YOCO: ERROR - Table {$table} does not exist!");
+            return false;
+        }
+        
         // Prepare data
         $data = array(
             'supplier_term_id' => $term_id,
@@ -110,15 +120,28 @@ class YoCo_Supplier {
             'is_active' => intval($settings['is_active']),
         );
         
+        // Debug: Log the prepared data
+        error_log("YOCO: Prepared data: " . print_r($data, true));
+        
         // Check if settings exist
         $existing = $wpdb->get_var(
             $wpdb->prepare("SELECT id FROM {$table} WHERE supplier_term_id = %d", $term_id)
         );
         
         if ($existing) {
+            error_log("YOCO: Updating existing record ID: {$existing}");
             $result = $wpdb->update($table, $data, array('supplier_term_id' => $term_id));
         } else {
+            error_log("YOCO: Creating new record");
             $result = $wpdb->insert($table, $data);
+        }
+        
+        // Debug: Log the result
+        if ($result === false) {
+            error_log("YOCO: Database error: " . $wpdb->last_error);
+            error_log("YOCO: Last query: " . $wpdb->last_query);
+        } else {
+            error_log("YOCO: Save successful, rows affected: " . $result);
         }
         
         return $result !== false;

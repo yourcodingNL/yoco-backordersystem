@@ -38,11 +38,12 @@ class YoCo_Product {
      * Hook into actions and filters
      */
     private function init_hooks() {
-        // Product edit page hooks
-        add_action('woocommerce_product_options_general_product_data', array($this, 'add_product_fields'));
+        // Add YoCo tab to product data tabs
+        add_filter('woocommerce_product_data_tabs', array($this, 'add_yoco_tab'));
+        add_action('woocommerce_product_data_panels', array($this, 'add_yoco_tab_content'));
         add_action('woocommerce_process_product_meta', array($this, 'save_product_fields'));
         
-        // Variation hooks
+        // Variation hooks  
         add_action('woocommerce_variation_options_pricing', array($this, 'add_variation_fields'), 10, 3);
         add_action('woocommerce_save_product_variation', array($this, 'save_variation_fields'), 10, 2);
         
@@ -53,6 +54,36 @@ class YoCo_Product {
         // Bulk edit
         add_action('woocommerce_product_bulk_edit_end', array($this, 'bulk_edit_fields'));
         add_action('woocommerce_product_bulk_edit_save', array($this, 'save_bulk_edit_fields'));
+        
+        // Auto-update backorder status when stock changes
+        add_action('woocommerce_product_set_stock', array($this, 'on_stock_change'));
+        add_action('woocommerce_variation_set_stock', array($this, 'on_stock_change'));
+        add_action('woocommerce_product_object_updated_props', array($this, 'on_product_updated'), 10, 2);
+    }
+    
+    /**
+     * Add YoCo tab to product data tabs
+     */
+    public function add_yoco_tab($tabs) {
+        $tabs['yoco_backorder'] = array(
+            'label' => __('YoCo Backorder', 'yoco-backorder'),
+            'target' => 'yoco_backorder_data',
+            'class' => array('show_if_simple', 'show_if_variable'),
+            'priority' => 80
+        );
+        return $tabs;
+    }
+    
+    /**
+     * Add YoCo tab content
+     */
+    public function add_yoco_tab_content() {
+        global $post;
+        ?>
+        <div id="yoco_backorder_data" class="panel woocommerce_options_panel">
+            <?php $this->add_product_fields(); ?>
+        </div>
+        <?php
     }
     
     /**
@@ -64,12 +95,49 @@ class YoCo_Product {
         echo '<div class="options_group">';
         echo '<h3>' . __('YoCo Backorder Settings', 'yoco-backorder') . '</h3>';
         
+        $product = wc_get_product($post->ID);
+        $is_variable = $product && $product->is_type('variable');
+        
         // Enable backorder checkbox
         woocommerce_wp_checkbox(array(
             'id' => '_yoco_backorder_enabled',
             'label' => __('Enable YoCo Backorder', 'yoco-backorder'),
             'description' => __('Enable backorder management for this product via YoCo system', 'yoco-backorder'),
         ));
+        
+        // For variable products, add checkbox to apply to all variations
+        if ($is_variable) {
+            woocommerce_wp_checkbox(array(
+                'id' => '_yoco_apply_to_all_variations',
+                'label' => __('Apply to ALL variations', 'yoco-backorder'),
+                'description' => __('Automatically enable/disable YoCo for all existing variations', 'yoco-backorder'),
+                'value' => 'yes'
+            ));
+            
+            // Show current variation status
+            $variations = $product->get_children();
+            if (!empty($variations)) {
+                $enabled_count = 0;
+                foreach ($variations as $variation_id) {
+                    $enabled = get_post_meta($variation_id, '_yoco_backorder_enabled', true);
+                    if ($enabled === 'yes') {
+                        $enabled_count++;
+                    }
+                }
+                
+                echo '<p class="form-field">';
+                echo '<label>' . __('Current Status:', 'yoco-backorder') . '</label>';
+                echo '<span style="margin-left: 10px;">';
+                if ($enabled_count === 0) {
+                    echo '<span style="color: #dc3232;">' . sprintf(__('0 of %d variations enabled', 'yoco-backorder'), count($variations)) . '</span>';
+                } elseif ($enabled_count === count($variations)) {
+                    echo '<span style="color: #46b450;">' . sprintf(__('All %d variations enabled', 'yoco-backorder'), count($variations)) . '</span>';
+                } else {
+                    echo '<span style="color: #ffb900;">' . sprintf(__('%d of %d variations enabled', 'yoco-backorder'), $enabled_count, count($variations)) . '</span>';
+                }
+                echo '</span></p>';
+            }
+        }
         
         // Show supplier stock info
         $this->display_supplier_stock_info($post->ID);
@@ -82,16 +150,53 @@ class YoCo_Product {
      */
     public function save_product_fields($post_id) {
         $enabled = isset($_POST['_yoco_backorder_enabled']) ? 'yes' : 'no';
-        update_post_meta($post_id, '_yoco_backorder_enabled', $enabled);
+        $apply_to_all = isset($_POST['_yoco_apply_to_all_variations']) ? 'yes' : 'no';
+        $was_enabled = get_post_meta($post_id, '_yoco_backorder_enabled', true);
         
-        // If product is variable, apply to all variations if requested
-        if (isset($_POST['_yoco_apply_to_variations']) && $_POST['_yoco_apply_to_variations'] === 'yes') {
-            $product = wc_get_product($post_id);
-            if ($product && $product->is_type('variable')) {
+        $product = wc_get_product($post_id);
+        
+        // For variable products, decide whether to save on parent or variations
+        if ($product && $product->is_type('variable')) {
+            if ($apply_to_all === 'yes') {
+                // Apply to all variations, don't save on parent
                 $variations = $product->get_children();
                 foreach ($variations as $variation_id) {
-                    update_post_meta($variation_id, '_yoco_backorder_enabled', $enabled);
+                    $was_variation_enabled = get_post_meta($variation_id, '_yoco_backorder_enabled', true);
+                    
+                    if ($enabled === 'yes') {
+                        // Store default delivery time when first enabling YoCo
+                        if ($was_variation_enabled !== 'yes') {
+                            $this->store_default_delivery_time($variation_id);
+                        }
+                        update_post_meta($variation_id, '_yoco_backorder_enabled', $enabled);
+                        self::update_product_backorder_status($variation_id);
+                    } else {
+                        // Disabling YoCo - restore original delivery time
+                        if ($was_variation_enabled === 'yes') {
+                            $this->restore_original_delivery_time($variation_id);
+                        }
+                        update_post_meta($variation_id, '_yoco_backorder_enabled', $enabled);
+                    }
                 }
+                
+                // Don't save on parent for variable products when applying to all
+                return;
+            }
+        } else {
+            // For simple products
+            if ($enabled === 'yes') {
+                // Store default delivery time when first enabling YoCo
+                if ($was_enabled !== 'yes') {
+                    $this->store_default_delivery_time($post_id);
+                }
+                update_post_meta($post_id, '_yoco_backorder_enabled', $enabled);
+                self::update_product_backorder_status($post_id);
+            } else {
+                // Disabling YoCo - restore original delivery time
+                if ($was_enabled === 'yes') {
+                    $this->restore_original_delivery_time($post_id);
+                }
+                update_post_meta($post_id, '_yoco_backorder_enabled', $enabled);
             }
         }
     }
@@ -128,6 +233,18 @@ class YoCo_Product {
      * Display supplier stock information
      */
     private function display_supplier_stock_info($product_id, $is_variation = false) {
+        $product = wc_get_product($product_id);
+        if (!$product) {
+            return;
+        }
+        
+        // For variable products (parent), show stock per variation
+        if ($product->is_type('variable') && !$is_variation) {
+            $this->display_variable_product_supplier_stock($product_id);
+            return;
+        }
+        
+        // For simple products or variations, show normal stock info
         $supplier_stocks = $this->get_product_supplier_stocks($product_id);
         
         if (empty($supplier_stocks)) {
@@ -160,6 +277,105 @@ class YoCo_Product {
         
         echo '<button type="button" class="button button-secondary yoco-check-stock" data-product-id="' . $product_id . '">';
         echo __('Refresh Supplier Stock', 'yoco-backorder');
+        echo '</button>';
+        
+        echo '</div>';
+    }
+    
+    /**
+     * Display supplier stock for variable products (per variation)
+     */
+    private function display_variable_product_supplier_stock($product_id) {
+        $product = wc_get_product($product_id);
+        if (!$product || !$product->is_type('variable')) {
+            return;
+        }
+        
+        $variations = $product->get_children();
+        if (empty($variations)) {
+            echo '<p class="form-field">';
+            echo '<em>' . __('No variations found for this product.', 'yoco-backorder') . '</em>';
+            echo '</p>';
+            return;
+        }
+        
+        echo '<div class="yoco-supplier-stock-info" style="margin: 10px 0; padding: 10px; background: #f9f9f9; border-left: 3px solid #2196F3;">';
+        echo '<h4>' . __('Supplier Stock Information by Variation', 'yoco-backorder') . '</h4>';
+        
+        foreach ($variations as $variation_id) {
+            $variation = wc_get_product($variation_id);
+            if (!$variation) continue;
+            
+            // Get variation attributes for display
+            $attributes = $variation->get_variation_attributes();
+            $variation_name = array();
+            foreach ($attributes as $attr_name => $attr_value) {
+                // Clean attribute name
+                $clean_attr_name = str_replace('attribute_', '', $attr_name);
+                
+                // Get the attribute label
+                $attr_label = wc_attribute_label($clean_attr_name);
+                
+                // Get the term name if this is a taxonomy attribute
+                if (taxonomy_exists($clean_attr_name)) {
+                    $term = get_term_by('slug', $attr_value, $clean_attr_name);
+                    if ($term && !is_wp_error($term)) {
+                        $attr_value = $term->name;
+                    }
+                }
+                
+                // Format the value (convert slugs like "78-4oz" to "4 oz.")
+                $attr_value = $this->format_attribute_value($attr_value);
+                
+                $variation_name[] = $attr_label . ': ' . $attr_value;
+            }
+            $variation_display = implode(', ', $variation_name);
+            
+            // Get own stock
+            $own_stock = $variation->get_stock_quantity();
+            $manage_stock = $variation->get_manage_stock();
+            
+            // Get supplier stock
+            $supplier_stocks = $this->get_product_supplier_stocks($variation_id);
+            
+            echo '<div style="border: 1px solid #ddd; margin: 8px 0; padding: 8px; background: white; border-radius: 3px;">';
+            echo '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">';
+            echo '<strong style="color: #333;">' . esc_html($variation_display) . '</strong>';
+            echo '<small style="color: #666;">ID: ' . $variation_id . '</small>';
+            echo '</div>';
+            
+            // Show own stock
+            if ($manage_stock) {
+                $stock_color = ($own_stock > 0) ? '#4CAF50' : '#f44336';
+                echo '<div style="margin: 3px 0;"><span style="color: #666;">Eigen voorraad:</span> <strong style="color: ' . $stock_color . ';">' . $own_stock . '</strong></div>';
+            } else {
+                echo '<div style="margin: 3px 0;"><span style="color: #666;">Eigen voorraad:</span> <em>Niet beheerd</em></div>';
+            }
+            
+            // Show supplier stock
+            if (!empty($supplier_stocks)) {
+                foreach ($supplier_stocks as $stock) {
+                    $supplier_term = get_term($stock['supplier_term_id'], 'pa_xcore_suppliers');
+                    if (!$supplier_term || is_wp_error($supplier_term)) {
+                        continue;
+                    }
+                    
+                    echo '<div style="margin: 3px 0;">';
+                    echo '<span style="color: #666;">' . esc_html($supplier_term->name) . ':</span> ';
+                    echo '<span style="color: ' . ($stock['stock_quantity'] > 0 ? '#4CAF50' : '#f44336') . ';">';
+                    echo $stock['stock_quantity'] . ' ' . ($stock['is_available'] ? __('available', 'yoco-backorder') : __('not available', 'yoco-backorder'));
+                    echo '</span>';
+                    echo '</div>';
+                }
+            } else {
+                echo '<div style="margin: 3px 0; color: #999;"><em>' . __('No supplier stock data', 'yoco-backorder') . '</em></div>';
+            }
+            
+            echo '</div>';
+        }
+        
+        echo '<button type="button" class="button button-secondary yoco-check-stock" data-product-id="' . $product_id . '">';
+        echo __('Refresh All Variation Stock', 'yoco-backorder');
         echo '</button>';
         
         echo '</div>';
@@ -230,23 +446,128 @@ class YoCo_Product {
     public function populate_product_list_columns($column, $post_id) {
         switch ($column) {
             case 'yoco_backorder':
-                $enabled = get_post_meta($post_id, '_yoco_backorder_enabled', true);
-                if ($enabled === 'yes') {
-                    echo '<span style="color: #4CAF50;">✓ ' . __('Enabled', 'yoco-backorder') . '</span>';
+                $product = wc_get_product($post_id);
+                if (!$product) break;
+                
+                if ($product->is_type('variable')) {
+                    // For variable products, check variations
+                    $variations = $product->get_children();
+                    $enabled_count = 0;
+                    $total_count = count($variations);
+                    
+                    foreach ($variations as $variation_id) {
+                        $enabled = get_post_meta($variation_id, '_yoco_backorder_enabled', true);
+                        if ($enabled === 'yes') {
+                            $enabled_count++;
+                        }
+                    }
+                    
+                    if ($enabled_count === 0) {
+                        echo '<span style="color: #999;">✗ ' . __('Disabled', 'yoco-backorder') . '</span>';
+                    } elseif ($enabled_count === $total_count) {
+                        echo '<span style="color: #4CAF50;">✓ ' . sprintf(__('All %d enabled', 'yoco-backorder'), $total_count) . '</span>';
+                    } else {
+                        echo '<span style="color: #ffb900;">◐ ' . sprintf(__('%d of %d enabled', 'yoco-backorder'), $enabled_count, $total_count) . '</span>';
+                    }
                 } else {
-                    echo '<span style="color: #999;">✗ ' . __('Disabled', 'yoco-backorder') . '</span>';
+                    // For simple products
+                    $enabled = get_post_meta($post_id, '_yoco_backorder_enabled', true);
+                    if ($enabled === 'yes') {
+                        echo '<span style="color: #4CAF50;">✓ ' . __('Enabled', 'yoco-backorder') . '</span>';
+                    } else {
+                        echo '<span style="color: #999;">✗ ' . __('Disabled', 'yoco-backorder') . '</span>';
+                    }
                 }
                 break;
                 
             case 'yoco_supplier_stock':
-                $stocks = $this->get_product_supplier_stocks($post_id);
-                if (empty($stocks)) {
-                    echo '<span style="color: #999;">-</span>';
+                $product = wc_get_product($post_id);
+                if (!$product) break;
+                
+                if ($product->is_type('variable')) {
+                    // For variable products, show summary of variations
+                    $variations = $product->get_children();
+                    if (empty($variations)) {
+                        echo '<span style="color: #999;">-</span>';
+                        break;
+                    }
+                    
+                    $variation_stocks = array();
+                    foreach ($variations as $variation_id) {
+                        $variation = wc_get_product($variation_id);
+                        if (!$variation) continue;
+                        
+                        // Get variation display name
+                        $attributes = $variation->get_variation_attributes();
+                        $variation_name = array();
+                        foreach ($attributes as $attr_name => $attr_value) {
+                            // Clean attribute name and get proper term name
+                            $clean_attr_name = str_replace('attribute_', '', $attr_name);
+                            
+                            if (taxonomy_exists($clean_attr_name)) {
+                                $term = get_term_by('slug', $attr_value, $clean_attr_name);
+                                if ($term && !is_wp_error($term)) {
+                                    $attr_value = $term->name;
+                                }
+                            }
+                            
+                            // Format and shorten for column display
+                            $formatted_value = $this->format_attribute_value($attr_value);
+                            if (strlen($formatted_value) > 10) {
+                                $formatted_value = substr($formatted_value, 0, 7) . '...';
+                            }
+                            $variation_name[] = $formatted_value;
+                        }
+                        $short_name = implode(', ', $variation_name);
+                        
+                        // Get own stock
+                        $own_stock = $variation->get_stock_quantity();
+                        $manage_stock = $variation->get_manage_stock();
+                        
+                        // Get supplier stocks
+                        $stocks = $this->get_product_supplier_stocks($variation_id);
+                        $supplier_stock = 0;
+                        
+                        if (!empty($stocks)) {
+                            foreach ($stocks as $stock) {
+                                if ($stock['stock_quantity'] > 0) {
+                                    $supplier_stock = $stock['stock_quantity'];
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        $stock_display = '';
+                        if ($manage_stock && $own_stock > 0) {
+                            $stock_display = "Eigen: {$own_stock}";
+                        } elseif ($supplier_stock > 0) {
+                            $stock_display = "Lev: {$supplier_stock}";
+                        } else {
+                            $stock_display = "0";
+                        }
+                        
+                        $variation_stocks[] = "{$short_name}: {$stock_display}";
+                    }
+                    
+                    foreach (array_slice($variation_stocks, 0, 3) as $var_stock) {
+                        echo '<div style="font-size: 11px; margin: 1px 0;"><small>' . esc_html($var_stock) . '</small></div>';
+                    }
+                    
+                    if (count($variation_stocks) > 3) {
+                        echo '<div style="font-size: 10px; color: #999;"><em>+' . (count($variation_stocks) - 3) . ' more...</em></div>';
+                    }
+                    
                 } else {
-                    foreach ($stocks as $stock) {
-                        $supplier_term = get_term($stock['supplier_term_id'], 'pa_xcore_suppliers');
-                        if ($supplier_term && !is_wp_error($supplier_term)) {
-                            echo '<div><small>' . esc_html($supplier_term->name) . ': ' . $stock['stock_quantity'] . '</small></div>';
+                    // For simple products
+                    $stocks = $this->get_product_supplier_stocks($post_id);
+                    if (empty($stocks)) {
+                        echo '<span style="color: #999;">-</span>';
+                    } else {
+                        foreach ($stocks as $stock) {
+                            $supplier_term = get_term($stock['supplier_term_id'], 'pa_xcore_suppliers');
+                            if ($supplier_term && !is_wp_error($supplier_term)) {
+                                echo '<div><small>' . esc_html($supplier_term->name) . ': ' . $stock['stock_quantity'] . '</small></div>';
+                            }
                         }
                     }
                 }
@@ -297,42 +618,155 @@ class YoCo_Product {
             return false;
         }
         
-        // Check current stock
-        if ($product->get_stock_quantity() > 0) {
-            // Product has stock, reset to default delivery time
-            $default_delivery = get_post_meta($product_id, 'rrp', true);
+        $current_stock = $product->get_stock_quantity();
+        $manage_stock = $product->get_manage_stock();
+        
+        // If we don't manage stock or have stock available - reset to normal delivery
+        if (!$manage_stock || ($current_stock > 0)) {
+            // Product has stock or stock is not managed - reset to default delivery time
+            $default_delivery = get_post_meta($product_id, '_yoco_default_delivery', true);
             if (empty($default_delivery)) {
                 $default_delivery = 'Voor 17:00 uur besteld, dezelfde werkdag nog verzonden';
             }
+            
+            // Reset backorder settings completely
+            $product->set_backorders('no');
+            $product->set_stock_status('instock');
             update_post_meta($product_id, 'rrp', $default_delivery);
+            $product->save();
+            
+            error_log("YOCO: Product {$product_id} has stock ({$current_stock}) - reset to normal delivery: {$default_delivery}");
             return true;
         }
         
-        // Check supplier stock
-        $supplier_stocks = self::get_product_supplier_stocks($product_id);
-        $has_supplier_stock = false;
-        $supplier_delivery_time = '';
-        
-        foreach ($supplier_stocks as $stock) {
-            if ($stock['stock_quantity'] > 0 && $stock['is_available']) {
-                $has_supplier_stock = true;
-                $supplier_settings = YoCo_Supplier::get_supplier_settings($stock['supplier_term_id']);
-                if (!empty($supplier_settings['default_delivery_time'])) {
-                    $supplier_delivery_time = $supplier_settings['default_delivery_time'];
+        // Only check supplier stock if we have NO stock
+        if ($current_stock <= 0) {
+            // Check supplier stock
+            global $wpdb;
+            $table = $wpdb->prefix . 'yoco_supplier_stock';
+            $supplier_stocks = $wpdb->get_results(
+                $wpdb->prepare("SELECT * FROM {$table} WHERE product_id = %d ORDER BY last_updated DESC", $product_id),
+                ARRAY_A
+            );
+            
+            $has_supplier_stock = false;
+            $supplier_delivery_time = '';
+            
+            foreach ($supplier_stocks as $stock) {
+                if ($stock['stock_quantity'] > 0 && $stock['is_available']) {
+                    $has_supplier_stock = true;
+                    $supplier_settings = YoCo_Supplier::get_supplier_settings($stock['supplier_term_id']);
+                    if (!empty($supplier_settings['default_delivery_time'])) {
+                        $supplier_delivery_time = $supplier_settings['default_delivery_time'];
+                    }
+                    break;
                 }
-                break;
             }
+            
+            if ($has_supplier_stock) {
+                // Set backorder with supplier delivery time
+                $product->set_backorders('notify');
+                if (!empty($supplier_delivery_time)) {
+                    update_post_meta($product_id, 'rrp', $supplier_delivery_time);
+                }
+                $product->save();
+                
+                error_log("YOCO: Product {$product_id} no stock - set backorder with supplier delivery: {$supplier_delivery_time}");
+            } else {
+                // No supplier stock either - reset backorder but keep out of stock
+                $product->set_backorders('no');
+                $product->save();
+                
+                error_log("YOCO: Product {$product_id} no stock and no supplier stock - out of stock");
+            }
+            
+            return $has_supplier_stock;
         }
         
-        if ($has_supplier_stock) {
-            // Set backorder with supplier delivery time
-            $product->set_backorders('notify');
-            if (!empty($supplier_delivery_time)) {
-                update_post_meta($product_id, 'rrp', $supplier_delivery_time);
-            }
-            $product->save();
+        return false;
+    }
+    
+    /**
+     * Handle stock changes - update backorder status automatically
+     */
+    public function on_stock_change($product) {
+        if (is_numeric($product)) {
+            $product_id = $product;
+        } else {
+            $product_id = $product->get_id();
         }
         
-        return $has_supplier_stock;
+        error_log("YOCO: Stock changed for product {$product_id} - updating backorder status");
+        self::update_product_backorder_status($product_id);
+    }
+    
+    /**
+     * Handle product updates - check if stock-related properties changed
+     */
+    public function on_product_updated($product, $updated_props) {
+        // Check if stock-related properties were updated
+        $stock_props = array('stock_quantity', 'manage_stock', 'stock_status');
+        $stock_changed = array_intersect($stock_props, $updated_props);
+        
+        if (!empty($stock_changed)) {
+            error_log("YOCO: Product {$product->get_id()} stock properties updated: " . implode(', ', $stock_changed));
+            self::update_product_backorder_status($product->get_id());
+        }
+    }
+    
+    /**
+     * Store default delivery time when YoCo is first enabled
+     */
+    private function store_default_delivery_time($product_id) {
+        // Only store if not already stored
+        $existing = get_post_meta($product_id, '_yoco_default_delivery', true);
+        if (empty($existing)) {
+            $current_delivery = get_post_meta($product_id, 'rrp', true);
+            if (empty($current_delivery)) {
+                $current_delivery = 'Voor 17:00 uur besteld, dezelfde werkdag nog verzonden';
+            }
+            update_post_meta($product_id, '_yoco_default_delivery', $current_delivery);
+        }
+    }
+    
+    /**
+     * Format attribute value from slug to readable format
+     */
+    private function format_attribute_value($value) {
+        // Handle common patterns
+        if (preg_match('/^(\d+)-(\d+)(oz|g|kg|ml|l)$/', $value, $matches)) {
+            // Pattern: "78-4oz" → "4 oz."
+            return $matches[2] . ' ' . $matches[3] . '.';
+        }
+        
+        if (preg_match('/^(\w+)-(.+)$/', $value, $matches)) {
+            // Pattern: "size-large" → "Large"  
+            return ucfirst(str_replace('-', ' ', $matches[2]));
+        }
+        
+        // Convert underscores/dashes to spaces and capitalize
+        $formatted = str_replace(array('-', '_'), ' ', $value);
+        $formatted = ucwords($formatted);
+        
+        return $formatted;
+    }
+    
+    /**
+     * Restore original delivery time when YoCo is disabled
+     */
+    private function restore_original_delivery_time($product_id) {
+        $original_delivery = get_post_meta($product_id, '_yoco_default_delivery', true);
+        if (!empty($original_delivery)) {
+            update_post_meta($product_id, 'rrp', $original_delivery);
+            
+            // Reset backorder to no
+            $product = wc_get_product($product_id);
+            if ($product) {
+                $product->set_backorders('no');
+                $product->save();
+            }
+            
+            error_log("YOCO: Restored original delivery time for product {$product_id}: {$original_delivery}");
+        }
     }
 }

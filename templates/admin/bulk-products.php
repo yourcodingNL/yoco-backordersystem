@@ -1,0 +1,375 @@
+<?php
+/**
+ * Bulk Product Setup Admin Template
+ */
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+// Handle bulk update form submission
+if (isset($_POST['bulk_update_products']) && wp_verify_nonce($_POST['yoco_bulk_nonce'], 'yoco_bulk_update')) {
+    $supplier_id = intval($_POST['supplier_id']);
+    $selected_products = isset($_POST['selected_products']) ? array_map('intval', $_POST['selected_products']) : array();
+    $action = sanitize_text_field($_POST['bulk_action']);
+    
+    $updated = 0;
+    
+    if (!empty($selected_products)) {
+        $meta_value = ($action === 'enable') ? 'yes' : 'no';
+        
+        foreach ($selected_products as $product_id) {
+            update_post_meta($product_id, '_yoco_backorder_enabled', $meta_value);
+            $updated++;
+        }
+        
+        $message = sprintf(
+            __('%d products %s for YoCo backorder successfully.', 'yoco-backorder'),
+            $updated,
+            ($action === 'enable') ? __('enabled', 'yoco-backorder') : __('disabled', 'yoco-backorder')
+        );
+        echo '<div class="notice notice-success"><p>' . $message . '</p></div>';
+    }
+}
+
+// Get suppliers with configured feeds
+$suppliers_with_feeds = array();
+if (class_exists('YoCo_Supplier') && method_exists('YoCo_Supplier', 'get_suppliers')) {
+    $all_suppliers = YoCo_Supplier::get_suppliers();
+    foreach ($all_suppliers as $supplier) {
+        if (!empty($supplier['settings']['feed_url']) && $supplier['settings']['is_active']) {
+            $suppliers_with_feeds[] = $supplier;
+        }
+    }
+}
+
+// Get current supplier
+$current_supplier_id = isset($_GET['supplier']) ? intval($_GET['supplier']) : null;
+$current_supplier = null;
+if ($current_supplier_id) {
+    foreach ($suppliers_with_feeds as $supplier) {
+        if ($supplier['term_id'] == $current_supplier_id) {
+            $current_supplier = $supplier;
+            break;
+        }
+    }
+}
+
+// Get products for current supplier
+$supplier_products = array();
+if ($current_supplier) {
+    $args = array(
+        'post_type' => 'product',
+        'posts_per_page' => -1,
+        'post_status' => 'publish',
+        'tax_query' => array(
+            array(
+                'taxonomy' => 'pa_xcore_suppliers',
+                'field' => 'term_id',
+                'terms' => $current_supplier_id,
+            )
+        )
+    );
+    
+    $products = get_posts($args);
+    
+    // Process products and their variations
+    foreach ($products as $product_post) {
+        $product = wc_get_product($product_post->ID);
+        if (!$product) continue;
+        
+        if ($product->is_type('variable')) {
+            // Add variations instead of parent
+            $variations = $product->get_children();
+            foreach ($variations as $variation_id) {
+                $variation = wc_get_product($variation_id);
+                if ($variation) {
+                    $supplier_products[] = array(
+                        'id' => $variation_id,
+                        'product' => $variation,
+                        'parent_id' => $product_post->ID,
+                        'parent_name' => $product->get_name(),
+                        'type' => 'variation'
+                    );
+                }
+            }
+        } else {
+            // Add simple product
+            $supplier_products[] = array(
+                'id' => $product_post->ID,
+                'product' => $product,
+                'parent_id' => null,
+                'parent_name' => null,
+                'type' => 'simple'
+            );
+        }
+    }
+}
+?>
+
+<div class="wrap">
+    <h1><?php _e('YoCo Bulk Product Setup', 'yoco-backorder'); ?></h1>
+    
+    <div style="display: flex; gap: 20px; margin: 20px 0;">
+        
+        <!-- Supplier Selection -->
+        <div class="card" style="flex: 0 0 350px;">
+            <h2><?php _e('Select Supplier', 'yoco-backorder'); ?></h2>
+            
+            <?php if (empty($suppliers_with_feeds)): ?>
+                <p><em><?php _e('No suppliers with configured feeds found.', 'yoco-backorder'); ?></em></p>
+                <p><?php _e('Please configure at least one supplier feed first.', 'yoco-backorder'); ?></p>
+                <a href="<?php echo admin_url('admin.php?page=yoco-suppliers'); ?>" class="button button-primary">
+                    <?php _e('Configure Suppliers', 'yoco-backorder'); ?>
+                </a>
+            <?php else: ?>
+                <div class="supplier-list">
+                    <?php foreach ($suppliers_with_feeds as $supplier): ?>
+                        <?php 
+                        $is_selected = ($current_supplier_id == $supplier['term_id']);
+                        
+                        // Count products including variations
+                        $args = array(
+                            'post_type' => 'product',
+                            'posts_per_page' => -1,
+                            'post_status' => 'publish',
+                            'fields' => 'ids',
+                            'tax_query' => array(
+                                array(
+                                    'taxonomy' => 'pa_xcore_suppliers',
+                                    'field' => 'term_id',
+                                    'terms' => $supplier['term_id'],
+                                )
+                            )
+                        );
+                        $products = get_posts($args);
+                        
+                        $total_items = 0;
+                        $yoco_enabled_count = 0;
+                        
+                        foreach ($products as $product_id) {
+                            $product = wc_get_product($product_id);
+                            if (!$product) continue;
+                            
+                            if ($product->is_type('variable')) {
+                                // Count variations instead of parent
+                                $variations = $product->get_children();
+                                $total_items += count($variations);
+                                
+                                // Count enabled variations
+                                foreach ($variations as $variation_id) {
+                                    $enabled = get_post_meta($variation_id, '_yoco_backorder_enabled', true);
+                                    if ($enabled === 'yes') {
+                                        $yoco_enabled_count++;
+                                    }
+                                }
+                            } else {
+                                // Simple product
+                                $total_items++;
+                                $enabled = get_post_meta($product_id, '_yoco_backorder_enabled', true);
+                                if ($enabled === 'yes') {
+                                    $yoco_enabled_count++;
+                                }
+                            }
+                        }
+                        ?>
+                        <div class="supplier-item <?php echo $is_selected ? 'selected' : ''; ?>" style="padding: 15px; margin: 10px 0; border: 2px solid <?php echo $is_selected ? '#0073aa' : '#ddd'; ?>; border-radius: 5px; background: <?php echo $is_selected ? '#f0f8ff' : 'white'; ?>; cursor: pointer;" onclick="window.location.href='?page=yoco-bulk-products&supplier=<?php echo $supplier['term_id']; ?>';">
+                            <h3 style="margin: 0 0 8px 0;"><?php echo esc_html($supplier['name']); ?></h3>
+                            <div style="color: #666; font-size: 13px;">
+                                <div>📦 <?php echo $total_items; ?> <?php _e('items (incl. variations)', 'yoco-backorder'); ?></div>
+                                <div>✅ <?php echo $yoco_enabled_count; ?> <?php _e('YoCo enabled', 'yoco-backorder'); ?></div>
+                                <div>🔗 <?php _e('Feed configured', 'yoco-backorder'); ?></div>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+        </div>
+        
+        <!-- Product Management -->
+        <div class="card" style="flex: 1;">
+            <?php if (!$current_supplier): ?>
+                <h2><?php _e('Select a Supplier', 'yoco-backorder'); ?></h2>
+                <p><?php _e('Choose a supplier from the left to see and manage their products.', 'yoco-backorder'); ?></p>
+                
+            <?php elseif (empty($supplier_products)): ?>
+                <h2><?php echo sprintf(__('Products for: %s', 'yoco-backorder'), esc_html($current_supplier['name'])); ?></h2>
+                <p><em><?php _e('No products found for this supplier.', 'yoco-backorder'); ?></em></p>
+                <p><?php _e('Make sure products are assigned to this supplier via the "pa_xcore_suppliers" attribute.', 'yoco-backorder'); ?></p>
+                
+            <?php else: ?>
+                <h2><?php echo sprintf(__('Products for: %s', 'yoco-backorder'), esc_html($current_supplier['name'])); ?></h2>
+                <p><?php echo sprintf(__('Found %d products for this supplier.', 'yoco-backorder'), count($supplier_products)); ?></p>
+                
+                <form method="post" id="bulk-products-form">
+                    <?php wp_nonce_field('yoco_bulk_update', 'yoco_bulk_nonce'); ?>
+                    <input type="hidden" name="supplier_id" value="<?php echo $current_supplier_id; ?>">
+                    
+                    <div style="margin: 20px 0; padding: 15px; background: #f9f9f9; border-radius: 5px;">
+                        <div style="display: flex; gap: 15px; align-items: center;">
+                            <div>
+                                <label>
+                                    <input type="checkbox" id="select-all"> 
+                                    <strong><?php _e('Select All', 'yoco-backorder'); ?></strong>
+                                </label>
+                            </div>
+                            <div>
+                                <select name="bulk_action" required>
+                                    <option value=""><?php _e('Choose action...', 'yoco-backorder'); ?></option>
+                                    <option value="enable"><?php _e('Enable YoCo Backorder', 'yoco-backorder'); ?></option>
+                                    <option value="disable"><?php _e('Disable YoCo Backorder', 'yoco-backorder'); ?></option>
+                                </select>
+                            </div>
+                            <div>
+                                <input type="submit" name="bulk_update_products" class="button button-primary" value="<?php esc_attr_e('Apply to Selected', 'yoco-backorder'); ?>">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="product-list" style="max-height: 600px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px;">
+                        <table class="widefat fixed striped">
+                            <thead>
+                                <tr>
+                                    <th style="width: 40px;"><?php _e('Select', 'yoco-backorder'); ?></th>
+                                    <th><?php _e('Product', 'yoco-backorder'); ?></th>
+                                    <th style="width: 80px;"><?php _e('SKU', 'yoco-backorder'); ?></th>
+                                    <th style="width: 120px;"><?php _e('YoCo Status', 'yoco-backorder'); ?></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($supplier_products as $item): ?>
+                                    <?php 
+                                    $product = $item['product'];
+                                    if (!$product) continue;
+                                    
+                                    $yoco_enabled = get_post_meta($item['id'], '_yoco_backorder_enabled', true);
+                                    $is_enabled = ($yoco_enabled === 'yes');
+                                    ?>
+                                    <tr>
+                                        <td style="text-align: center;">
+                                            <input type="checkbox" name="selected_products[]" value="<?php echo $item['id']; ?>" class="product-checkbox">
+                                        </td>
+                                        <td>
+                                            <?php if ($item['type'] === 'variation'): ?>
+                                                <strong><?php echo esc_html($item['parent_name']); ?></strong>
+                                                <div style="color: #2271b1; font-size: 13px; margin: 2px 0;">
+                                                    <?php
+                                                    // Show variation attributes
+                                                    $attributes = $product->get_variation_attributes();
+                                                    $variation_text = array();
+                                                    foreach ($attributes as $attr_name => $attr_value) {
+                                                        $clean_attr_name = str_replace('attribute_', '', $attr_name);
+                                                        $attr_label = wc_attribute_label($clean_attr_name);
+                                                        
+                                                        // Get proper term name if it's a taxonomy
+                                                        if (taxonomy_exists($clean_attr_name)) {
+                                                            $term = get_term_by('slug', $attr_value, $clean_attr_name);
+                                                            if ($term && !is_wp_error($term)) {
+                                                                $attr_value = $term->name;
+                                                            }
+                                                        }
+                                                        
+                                                        $variation_text[] = $attr_label . ': ' . $attr_value;
+                                                    }
+                                                    echo '↳ ' . implode(', ', $variation_text);
+                                                    ?>
+                                                </div>
+                                            <?php else: ?>
+                                                <strong><?php echo esc_html($product->get_name()); ?></strong>
+                                            <?php endif; ?>
+                                            <div style="color: #666; font-size: 12px;">
+                                                ID: <?php echo $item['id']; ?> | 
+                                                <?php echo ucfirst($product->get_type()); ?>
+                                                <?php if ($product->get_stock_quantity() !== null): ?>
+                                                    | <?php _e('Stock:', 'yoco-backorder'); ?> <?php echo $product->get_stock_quantity(); ?>
+                                                <?php endif; ?>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <code><?php echo esc_html($product->get_sku()); ?></code>
+                                        </td>
+                                        <td>
+                                            <?php if ($is_enabled): ?>
+                                                <span style="color: #46b450; font-weight: bold;">✅ <?php _e('Enabled', 'yoco-backorder'); ?></span>
+                                            <?php else: ?>
+                                                <span style="color: #dc3232;">❌ <?php _e('Disabled', 'yoco-backorder'); ?></span>
+                                            <?php endif; ?>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </form>
+            <?php endif; ?>
+        </div>
+    </div>
+</div>
+
+<script>
+jQuery(document).ready(function($) {
+    // Select all functionality
+    $('#select-all').on('change', function() {
+        $('.product-checkbox').prop('checked', $(this).prop('checked'));
+    });
+    
+    // Update select all when individual checkboxes change
+    $('.product-checkbox').on('change', function() {
+        var total = $('.product-checkbox').length;
+        var checked = $('.product-checkbox:checked').length;
+        
+        $('#select-all').prop('indeterminate', checked > 0 && checked < total);
+        $('#select-all').prop('checked', checked === total);
+    });
+    
+    // Form validation
+    $('#bulk-products-form').on('submit', function(e) {
+        var selected = $('.product-checkbox:checked').length;
+        var action = $('select[name="bulk_action"]').val();
+        
+        if (selected === 0) {
+            alert('<?php esc_js(_e("Please select at least one product.", "yoco-backorder")); ?>');
+            e.preventDefault();
+            return false;
+        }
+        
+        if (!action) {
+            alert('<?php esc_js(_e("Please choose an action.", "yoco-backorder")); ?>');
+            e.preventDefault();
+            return false;
+        }
+        
+        var actionText = (action === 'enable') ? '<?php esc_js(_e("enable", "yoco-backorder")); ?>' : '<?php esc_js(_e("disable", "yoco-backorder")); ?>';
+        var confirmMessage = '<?php esc_js(_e("Are you sure you want to", "yoco-backorder")); ?> ' + actionText + ' <?php esc_js(_e("YoCo backorder for", "yoco-backorder")); ?> ' + selected + ' <?php esc_js(_e("products?", "yoco-backorder")); ?>';
+        
+        if (!confirm(confirmMessage)) {
+            e.preventDefault();
+            return false;
+        }
+    });
+});
+</script>
+
+<style>
+.supplier-item:hover {
+    border-color: #0073aa !important;
+    background-color: #f8f9fa !important;
+}
+
+.supplier-item.selected {
+    box-shadow: 0 2px 5px rgba(0,115,170,0.2);
+}
+
+.product-list table th {
+    background: #f1f1f1;
+    font-weight: 600;
+}
+
+.product-checkbox {
+    transform: scale(1.2);
+}
+
+#select-all {
+    transform: scale(1.3);
+}
+</style>
