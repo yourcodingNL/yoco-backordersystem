@@ -1,250 +1,191 @@
 <?php
 /**
- * YoCo Backorder System Admin
+ * Plugin Name: YourCoding Backorder System
+ * Plugin URI: https://github.com/yourcodingNL/yoco-backorderystem
+ * Description: Advanced backorder management system for WooCommerce with supplier stock integration
+ * Version: 1.0.0
+ * Author: YourCoding
+ * Author URI: https://yourcoding.nl
+ * Requires at least: 5.0
+ * Tested up to: 6.4
+ * Requires PHP: 7.4
+ * WC requires at least: 5.0
+ * WC tested up to: 8.0
+ * Text Domain: yoco-backorder
+ * Domain Path: /languages
+ * License: GPL v2 or later
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  */
 
+// Prevent direct access
 if (!defined('ABSPATH')) {
     exit;
 }
 
-/**
- * YoCo_Admin Class
- */
-class YoCo_Admin {
+// Define plugin constants
+define('YOCO_BACKORDER_VERSION', '1.0.0');
+define('YOCO_BACKORDER_PLUGIN_FILE', __FILE__);
+define('YOCO_BACKORDER_PLUGIN_DIR', plugin_dir_path(__FILE__));
+define('YOCO_BACKORDER_PLUGIN_URL', plugin_dir_url(__FILE__));
+define('YOCO_BACKORDER_PLUGIN_BASENAME', plugin_basename(__FILE__));
+
+// Check if WooCommerce is active
+if (!class_exists('YoCo_Backorder_System')) {
     
     /**
-     * The single instance of the class
+     * Main YoCo Backorder System Class
      */
-    protected static $_instance = null;
-    
-    /**
-     * Main YoCo_Admin Instance
-     */
-    public static function instance() {
-        if (is_null(self::$_instance)) {
-            self::$_instance = new self();
-        }
-        return self::$_instance;
-    }
-    
-    /**
-     * Constructor
-     */
-    public function __construct() {
-        $this->init_hooks();
-    }
-    
-    /**
-     * Hook into actions and filters
-     */
-    private function init_hooks() {
-        add_action('admin_menu', array($this, 'admin_menu'));
-        add_action('admin_enqueue_scripts', array($this, 'admin_scripts'));
-        add_action('admin_init', array($this, 'admin_init'));
+    class YoCo_Backorder_System {
         
-        // AJAX hooks
-        add_action('wp_ajax_yoco_test_supplier_feed', array($this, 'ajax_test_supplier_feed'));
-        add_action('wp_ajax_yoco_sync_supplier', array($this, 'ajax_sync_supplier'));
-        add_action('wp_ajax_yoco_check_product_stock', array($this, 'ajax_check_product_stock'));
-    }
-    
-    /**
-     * Add admin menu
-     */
-    public function admin_menu() {
-        add_menu_page(
-            __('YoCo Backorder', 'yoco-backorder'),
-            __('YoCo Backorder', 'yoco-backorder'),
-            'manage_woocommerce',
-            'yoco-backorder',
-            array($this, 'dashboard_page'),
-            'dashicons-update',
-            56
-        );
+        /**
+         * Plugin version
+         */
+        public $version = '1.0.0';
         
-        add_submenu_page(
-            'yoco-backorder',
-            __('Dashboard', 'yoco-backorder'),
-            __('Dashboard', 'yoco-backorder'),
-            'manage_woocommerce',
-            'yoco-backorder',
-            array($this, 'dashboard_page')
-        );
+        /**
+         * The single instance of the class
+         */
+        protected static $_instance = null;
         
-        add_submenu_page(
-            'yoco-backorder',
-            __('Suppliers', 'yoco-backorder'),
-            __('Suppliers', 'yoco-backorder'),
-            'manage_woocommerce',
-            'yoco-suppliers',
-            array($this, 'suppliers_page')
-        );
-        
-        add_submenu_page(
-            'yoco-backorder',
-            __('Sync Logs', 'yoco-backorder'),
-            __('Sync Logs', 'yoco-backorder'),
-            'manage_woocommerce',
-            'yoco-sync-logs',
-            array($this, 'sync_logs_page')
-        );
-        
-        add_submenu_page(
-            'yoco-backorder',
-            __('Settings', 'yoco-backorder'),
-            __('Settings', 'yoco-backorder'),
-            'manage_woocommerce',
-            'yoco-settings',
-            array($this, 'settings_page')
-        );
-    }
-    
-    /**
-     * Enqueue admin scripts
-     */
-    public function admin_scripts($hook) {
-        if (strpos($hook, 'yoco-') === false) {
-            return;
+        /**
+         * Main YoCo_Backorder_System Instance
+         */
+        public static function instance() {
+            if (is_null(self::$_instance)) {
+                self::$_instance = new self();
+            }
+            return self::$_instance;
         }
         
-        wp_enqueue_script(
-            'yoco-admin',
-            YOCO_BACKORDER_PLUGIN_URL . 'assets/js/admin.js',
-            array('jquery'),
-            YOCO_BACKORDER_VERSION,
-            true
-        );
-        
-        wp_localize_script('yoco-admin', 'yoco_admin', array(
-            'ajax_url' => admin_url('admin-ajax.php'),
-            'nonce' => wp_create_nonce('yoco_admin_nonce'),
-            'current_time' => current_time('mysql'),
-            'timezone' => wp_timezone_string(),
-            'i18n' => array(
-                'testing_feed' => __('Testing feed...', 'yoco-backorder'),
-                'syncing' => __('Syncing...', 'yoco-backorder'),
-                'checking_stock' => __('Checking stock...', 'yoco-backorder'),
-                'success' => __('Success', 'yoco-backorder'),
-                'error' => __('Error', 'yoco-backorder'),
-            )
-        ));
-        
-        wp_enqueue_style(
-            'yoco-admin',
-            YOCO_BACKORDER_PLUGIN_URL . 'assets/css/admin.css',
-            array(),
-            YOCO_BACKORDER_VERSION
-        );
-    }
-    
-    /**
-     * Admin init
-     */
-    public function admin_init() {
-        // Register settings
-        register_setting('yoco_settings', 'yoco_enable_frontend_display');
-        register_setting('yoco_settings', 'yoco_frontend_text');
-        register_setting('yoco_settings', 'yoco_cron_enabled');
-        register_setting('yoco_settings', 'yoco_debug_mode');
-    }
-    
-    /**
-     * Dashboard page
-     */
-    public function dashboard_page() {
-        $template_file = YOCO_BACKORDER_PLUGIN_DIR . 'templates/admin/dashboard.php';
-        if (file_exists($template_file)) {
-            include $template_file;
-        } else {
-            echo '<div class="wrap"><h1>YoCo Dashboard</h1><p>Template file not found.</p></div>';
-        }
-    }
-    
-    /**
-     * Suppliers page
-     */
-    public function suppliers_page() {
-        $template_file = YOCO_BACKORDER_PLUGIN_DIR . 'templates/admin/suppliers.php';
-        if (file_exists($template_file)) {
-            include $template_file;
-        } else {
-            echo '<div class="wrap"><h1>YoCo Suppliers</h1><p>Template file not found.</p></div>';
-        }
-    }
-    
-    /**
-     * Sync logs page
-     */
-    public function sync_logs_page() {
-        $template_file = YOCO_BACKORDER_PLUGIN_DIR . 'templates/admin/sync-logs.php';
-        if (file_exists($template_file)) {
-            include $template_file;
-        } else {
-            echo '<div class="wrap"><h1>YoCo Sync Logs</h1><p>Template file not found.</p></div>';
-        }
-    }
-    
-    /**
-     * Settings page
-     */
-    public function settings_page() {
-        $template_file = YOCO_BACKORDER_PLUGIN_DIR . 'templates/admin/settings.php';
-        if (file_exists($template_file)) {
-            include $template_file;
-        } else {
-            echo '<div class="wrap"><h1>YoCo Settings</h1><p>Template file not found.</p></div>';
-        }
-    }
-    
-    /**
-     * AJAX: Test supplier feed
-     */
-    public function ajax_test_supplier_feed() {
-        check_ajax_referer('yoco_admin_nonce', 'nonce');
-        
-        if (!current_user_can('manage_woocommerce')) {
-            wp_die(__('You do not have sufficient permissions to access this page.', 'yoco-backorder'));
+        /**
+         * Constructor
+         */
+        public function __construct() {
+            $this->define_constants();
+            $this->includes();
+            $this->init_hooks();
         }
         
-        $feed_url = sanitize_text_field($_POST['feed_url']);
-        $delimiter = sanitize_text_field($_POST['delimiter']);
-        
-        $response = YoCo_Supplier::test_feed($feed_url, $delimiter);
-        
-        wp_send_json($response);
-    }
-    
-    /**
-     * AJAX: Sync supplier
-     */
-    public function ajax_sync_supplier() {
-        check_ajax_referer('yoco_admin_nonce', 'nonce');
-        
-        if (!current_user_can('manage_woocommerce')) {
-            wp_die(__('You do not have sufficient permissions to access this page.', 'yoco-backorder'));
+        /**
+         * Define constants
+         */
+        private function define_constants() {
+            $this->define('YOCO_ABSPATH', dirname(YOCO_BACKORDER_PLUGIN_FILE) . '/');
         }
         
-        $supplier_id = intval($_POST['supplier_id']);
-        
-        $response = YoCo_Sync::manual_sync($supplier_id);
-        
-        wp_send_json($response);
-    }
-    
-    /**
-     * AJAX: Check product stock
-     */
-    public function ajax_check_product_stock() {
-        check_ajax_referer('yoco_admin_nonce', 'nonce');
-        
-        if (!current_user_can('edit_products')) {
-            wp_die(__('You do not have sufficient permissions to access this page.', 'yoco-backorder'));
+        /**
+         * Define constant if not already set
+         */
+        private function define($name, $value) {
+            if (!defined($name)) {
+                define($name, $value);
+            }
         }
         
-        $product_id = intval($_POST['product_id']);
+        /**
+         * Include required core files
+         */
+        public function includes() {
+            // Core classes
+            include_once YOCO_ABSPATH . 'includes/class-yoco-install.php';
+            include_once YOCO_ABSPATH . 'includes/class-yoco-admin.php';
+            include_once YOCO_ABSPATH . 'includes/class-yoco-supplier.php';
+            include_once YOCO_ABSPATH . 'includes/class-yoco-product.php';
+            include_once YOCO_ABSPATH . 'includes/class-yoco-sync.php';
+            
+            // Functions file for shared utilities
+            if (file_exists(YOCO_ABSPATH . 'includes/yoco-functions.php')) {
+                include_once YOCO_ABSPATH . 'includes/yoco-functions.php';
+            }
+        }
         
-        $response = YoCo_Product::check_supplier_stock($product_id);
+        /**
+         * Hook into actions and filters
+         */
+        private function init_hooks() {
+            register_activation_hook(YOCO_BACKORDER_PLUGIN_FILE, array('YoCo_Install', 'install'));
+            register_deactivation_hook(YOCO_BACKORDER_PLUGIN_FILE, array('YoCo_Install', 'deactivate'));
+            
+            add_action('init', array($this, 'init'), 0);
+            add_action('plugins_loaded', array($this, 'check_woocommerce'), 10);
+        }
         
-        wp_send_json($response);
+        /**
+         * Init YoCo when WordPress Initialises
+         */
+        public function init() {
+            // Before init action
+            do_action('yoco_before_init');
+            
+            // Set up localisation
+            $this->load_plugin_textdomain();
+            
+            // Init admin
+            if (is_admin()) {
+                YoCo_Admin::instance();
+            }
+            
+            // Init classes
+            YoCo_Supplier::instance();
+            YoCo_Product::instance();
+            
+            // After init action
+            do_action('yoco_init');
+        }
+        
+        /**
+         * Check if WooCommerce is active
+         */
+        public function check_woocommerce() {
+            if (!class_exists('WooCommerce')) {
+                add_action('admin_notices', array($this, 'woocommerce_missing_notice'));
+                return;
+            }
+        }
+        
+        /**
+         * WooCommerce fallback notice
+         */
+        public function woocommerce_missing_notice() {
+            echo '<div class="error"><p><strong>' . sprintf(esc_html__('YoCo Backorder System requires WooCommerce to be installed and active. You can download %s here.', 'yoco-backorder'), '<a href="https://woocommerce.com/" target="_blank">WooCommerce</a>') . '</strong></p></div>';
+        }
+        
+        /**
+         * Load plugin textdomain
+         */
+        public function load_plugin_textdomain() {
+            load_plugin_textdomain('yoco-backorder', false, dirname(YOCO_BACKORDER_PLUGIN_BASENAME) . '/languages');
+        }
+        
+        /**
+         * Get the plugin url
+         */
+        public function plugin_url() {
+            return untrailingslashit(plugins_url('/', YOCO_BACKORDER_PLUGIN_FILE));
+        }
+        
+        /**
+         * Get the plugin path
+         */
+        public function plugin_path() {
+            return untrailingslashit(plugin_dir_path(YOCO_BACKORDER_PLUGIN_FILE));
+        }
+        
+        /**
+         * Get Ajax URL
+         */
+        public function ajax_url() {
+            return admin_url('admin-ajax.php', 'relative');
+        }
     }
 }
+
+/**
+ * Main instance of YoCo_Backorder_System
+ */
+function YoCo() {
+    return YoCo_Backorder_System::instance();
+}
+
+// Initialize the plugin
+YoCo();
