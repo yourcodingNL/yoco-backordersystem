@@ -169,8 +169,12 @@ if (class_exists('YoCo_Supplier') && method_exists('YoCo_Supplier', 'get_supplie
                             <?php endif; ?>
                         </td>
                         <td data-colname="<?php esc_attr_e('Started', 'yoco-backorder'); ?>">
-                            <?php echo wp_date('M j, Y', strtotime($log['started_at'])); ?><br>
-                            <small><?php echo wp_date('H:i:s', strtotime($log['started_at'])); ?></small>
+                            <?php 
+                            // Fix timezone issue - database stores in WordPress timezone but strtotime() interprets as UTC
+                            $started_timestamp = strtotime($log['started_at'] . ' ' . wp_timezone_string());
+                            echo wp_date('M j, Y', $started_timestamp); 
+                            ?><br>
+                            <small><?php echo wp_date('H:i:s', $started_timestamp); ?></small>
                         </td>
                         <td data-colname="<?php esc_attr_e('Duration', 'yoco-backorder'); ?>">
                             <?php if ($duration): ?>

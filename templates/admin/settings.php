@@ -130,11 +130,28 @@ if (isset($_POST['repair_database']) && wp_verify_nonce($_POST['yoco_repair_nonc
 
 // Handle form submission
 if (isset($_POST['save_settings']) && wp_verify_nonce($_POST['yoco_settings_nonce'], 'yoco_save_settings')) {
+    $old_cron_enabled = get_option('yoco_cron_enabled', 'no');
+    $new_cron_enabled = isset($_POST['yoco_cron_enabled']) ? 'yes' : 'no';
+    
     update_option('yoco_enable_frontend_display', isset($_POST['yoco_enable_frontend_display']) ? 'yes' : 'no');
     update_option('yoco_frontend_text', sanitize_text_field($_POST['yoco_frontend_text']));
-    update_option('yoco_cron_enabled', isset($_POST['yoco_cron_enabled']) ? 'yes' : 'no');
+    update_option('yoco_cron_enabled', $new_cron_enabled);
+    update_option('yoco_cron_test_mode', isset($_POST['yoco_cron_test_mode']) ? 'yes' : 'no');
+    update_option('yoco_cron_test_interval', intval($_POST['yoco_cron_test_interval'] ?? 5));
     update_option('yoco_debug_mode', isset($_POST['yoco_debug_mode']) ? 'yes' : 'no');
     update_option('yoco_auto_sync_on_save', isset($_POST['yoco_auto_sync_on_save']) ? 'yes' : 'no');
+    
+    // Handle cron scheduling
+    if ($old_cron_enabled !== $new_cron_enabled) {
+        if ($new_cron_enabled === 'yes') {
+            YoCo_Cron::schedule_events();
+            $cron_message = __('Automatic synchronization has been enabled. Suppliers will sync at their configured times.', 'yoco-backorder');
+        } else {
+            YoCo_Cron::unschedule_events();
+            $cron_message = __('Automatic synchronization has been disabled.', 'yoco-backorder');
+        }
+        echo '<div class="notice notice-info"><p>' . $cron_message . '</p></div>';
+    }
     
     echo '<div class="notice notice-success"><p>' . __('Settings saved successfully.', 'yoco-backorder') . '</p></div>';
 }
@@ -195,10 +212,41 @@ $auto_sync_on_save = get_option('yoco_auto_sync_on_save', 'no');
                         <p class="description">
                             <?php _e('When enabled, suppliers will be synchronized automatically based on their configured schedules.', 'yoco-backorder'); ?>
                         </p>
+                        <?php if ($cron_enabled === 'yes'): ?>
+                            <?php
+                            $next_cron = wp_next_scheduled('yoco_supplier_sync_cron');
+                            if ($next_cron) {
+                                $next_time = wp_date(get_option('date_format') . ' H:i', $next_cron);
+                                echo '<p style="color: #46b450;">✅ <strong>Active:</strong> Next check at ' . $next_time . '</p>';
+                            } else {
+                                echo '<p style="color: #dc3232;">⚠️ Cron not scheduled properly. Save settings to reschedule.</p>';
+                            }
+                            ?>
+                        <?php else: ?>
+                            <p style="color: #666;">ℹ️ Enable to automatically sync suppliers at configured times.</p>
+                        <?php endif; ?>
                     </td>
                 </tr>
                 <tr>
-                    <th scope="row"><?php _e('Auto-sync on Product Save', 'yoco-backorder'); ?></th>
+                    <th scope="row"><?php _e('Cron Test Mode', 'yoco-backorder'); ?></th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="yoco_cron_test_mode" value="yes" <?php checked(get_option('yoco_cron_test_mode', 'no'), 'yes'); ?>>
+                            <?php _e('Enable cron test mode (for development/testing)', 'yoco-backorder'); ?>
+                        </label>
+                        <p class="description">
+                            <?php _e('⚠️ When enabled, cron will run every X minutes instead of checking scheduled times. Disable after testing!', 'yoco-backorder'); ?>
+                        </p>
+                        
+                        <?php if (get_option('yoco_cron_test_mode', 'no') === 'yes'): ?>
+                            <div style="margin-top: 10px;">
+                                <label for="yoco_cron_test_interval"><?php _e('Test interval (minutes):', 'yoco-backorder'); ?></label>
+                                <input type="number" id="yoco_cron_test_interval" name="yoco_cron_test_interval" value="<?php echo get_option('yoco_cron_test_interval', 5); ?>" min="1" max="60" style="width: 80px;">
+                                <span class="description"><?php _e('Run sync every X minutes (1-60)', 'yoco-backorder'); ?></span>
+                            </div>
+                        <?php endif; ?>
+                    </td>
+                </tr>
                     <td>
                         <label>
                             <input type="checkbox" name="yoco_auto_sync_on_save" value="yes" <?php checked($auto_sync_on_save, 'yes'); ?>>
@@ -378,6 +426,59 @@ $auto_sync_on_save = get_option('yoco_auto_sync_on_save', 'no');
                         </td>
                         <td><?php _e('Products with YoCo backorder enabled', 'yoco-backorder'); ?></td>
                     </tr>
+                    <tr>
+                        <td><?php _e('WordPress Cron System', 'yoco-backorder'); ?></td>
+                        <td>
+                            <?php 
+                            // Check if DISABLE_WP_CRON is set
+                            $wp_cron_disabled = defined('DISABLE_WP_CRON') && DISABLE_WP_CRON;
+                            
+                            // Check if there are any scheduled events
+                            $cron_array = _get_cron_array();
+                            $has_scheduled_events = !empty($cron_array);
+                            
+                            // Check if wp-cron.php is accessible
+                            $cron_url = site_url('wp-cron.php');
+                            
+                            if ($wp_cron_disabled) {
+                                echo '<span style="color: #dc3232;">✗ ' . __('Disabled', 'yoco-backorder') . '</span>';
+                                echo '<br><small style="color: #dc3232;">DISABLE_WP_CRON = true</small>';
+                            } elseif (!$has_scheduled_events) {
+                                echo '<span style="color: #ffb900;">⚠ ' . __('No Events', 'yoco-backorder') . '</span>';
+                                echo '<br><small>No scheduled events found</small>';
+                            } else {
+                                echo '<span style="color: #46b450;">✓ ' . __('Active', 'yoco-backorder') . '</span>';
+                                echo '<br><small>' . count($cron_array, COUNT_RECURSIVE) . ' events scheduled</small>';
+                            }
+                            ?>
+                        </td>
+                        <td><?php _e('WordPress cron system functionality', 'yoco-backorder'); ?></td>
+                    </tr>
+                    <tr>
+                        <td><?php _e('YoCo Cron Status', 'yoco-backorder'); ?></td>
+                        <td>
+                            <?php 
+                            $cron_enabled = get_option('yoco_cron_enabled', 'no') === 'yes';
+                            $cron_scheduled = wp_next_scheduled('yoco_supplier_sync_cron');
+                            $test_mode = get_option('yoco_cron_test_mode', 'no') === 'yes';
+                            
+                            if ($cron_enabled && $cron_scheduled) {
+                                echo '<span style="color: #46b450;">✓ ' . __('Active', 'yoco-backorder') . '</span>';
+                                $next_time = wp_date('H:i', $cron_scheduled);
+                                echo '<br><small>Next: ' . $next_time . '</small>';
+                            } elseif ($cron_enabled && !$cron_scheduled) {
+                                echo '<span style="color: #ffb900;">⚠ ' . __('Not Scheduled', 'yoco-backorder') . '</span>';
+                            } else {
+                                echo '<span style="color: #dc3232;">✗ ' . __('Disabled', 'yoco-backorder') . '</span>';
+                            }
+                            
+                            if ($test_mode) {
+                                echo '<br><small style="color: #ffb900;">🧪 Test Mode</small>';
+                            }
+                            ?>
+                        </td>
+                        <td><?php _e('YoCo automatic synchronization status', 'yoco-backorder'); ?></td>
+                    </tr>
                 </tbody>
             </table>
         </div>
@@ -418,6 +519,21 @@ jQuery(document).ready(function($) {
             button.prop('disabled', false).text('<?php esc_js(_e("Reset Sync Logs", "yoco-backorder")); ?>');
             alert('<?php esc_js(_e("Sync logs reset", "yoco-backorder")); ?>');
         }, 1000);
+    });
+    
+    // Toggle cron test mode fields
+    $('input[name="yoco_cron_test_mode"]').on('change', function() {
+        if ($(this).is(':checked')) {
+            var testFieldsHtml = '<div id="cron-test-fields" style="margin-top: 10px;">';
+            testFieldsHtml += '<label for="yoco_cron_test_interval"><?php esc_js(_e("Test interval (minutes):", "yoco-backorder")); ?></label> ';
+            testFieldsHtml += '<input type="number" id="yoco_cron_test_interval" name="yoco_cron_test_interval" value="5" min="1" max="60" style="width: 80px;"> ';
+            testFieldsHtml += '<span class="description"><?php esc_js(_e("Run sync every X minutes (1-60)", "yoco-backorder")); ?></span>';
+            testFieldsHtml += '</div>';
+            
+            $(this).closest('td').append(testFieldsHtml);
+        } else {
+            $('#cron-test-fields').remove();
+        }
     });
 });
 </script>

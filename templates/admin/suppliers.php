@@ -574,7 +574,7 @@ jQuery(document).ready(function($) {
     }
     
     // Add/remove time inputs
-    $('#add-time').on('click', function() {
+    $('#add-time').off('click').on('click', function() {
         var timeHtml = '<div class="time-input" style="margin: 5px 0;">';
         timeHtml += '<input type="time" name="update_times[]" value="09:00">';
         timeHtml += '<button type="button" class="button button-small remove-time" style="margin-left: 5px;"><?php esc_js(_e("Remove", "yoco-backorder")); ?></button>';

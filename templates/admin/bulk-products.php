@@ -234,65 +234,12 @@ if ($current_supplier) {
                     <?php foreach ($suppliers_with_feeds as $supplier): ?>
                         <?php 
                         $is_selected = ($current_supplier_id == $supplier['term_id']);
-                        
-                        // PERFORMANCE: Bulk count products including variations
-                        $args = array(
-                            'post_type' => 'product',
-                            'posts_per_page' => -1,
-                            'post_status' => 'publish',
-                            'fields' => 'ids',
-                            'tax_query' => array(
-                                array(
-                                    'taxonomy' => 'pa_xcore_suppliers',
-                                    'field' => 'term_id',
-                                    'terms' => $supplier['term_id'],
-                                )
-                            )
-                        );
-                        $products = get_posts($args);
-                        
-                        if (empty($products)) {
-                            $total_items = 0;
-                            $yoco_enabled_count = 0;
-                        } else {
-                            // PERFORMANCE: Get all product IDs including variations in one go
-                            $all_item_ids = array();
-                            foreach ($products as $product_id) {
-                                $product = wc_get_product($product_id);
-                                if (!$product) continue;
-                                
-                                if ($product->is_type('variable')) {
-                                    $variations = $product->get_children();
-                                    $all_item_ids = array_merge($all_item_ids, $variations);
-                                } else {
-                                    $all_item_ids[] = $product_id;
-                                }
-                            }
-                            
-                            $total_items = count($all_item_ids);
-                            
-                            // PERFORMANCE: Bulk query for YoCo enabled count
-                            if (!empty($all_item_ids)) {
-                                global $wpdb;
-                                $item_ids_string = implode(',', array_map('intval', $all_item_ids));
-                                $yoco_enabled_count = $wpdb->get_var("
-                                    SELECT COUNT(*) 
-                                    FROM {$wpdb->postmeta} 
-                                    WHERE post_id IN ({$item_ids_string}) 
-                                    AND meta_key = '_yoco_backorder_enabled' 
-                                    AND meta_value = 'yes'
-                                ");
-                            } else {
-                                $yoco_enabled_count = 0;
-                            }
-                        }
                         ?>
                         <div class="supplier-item <?php echo $is_selected ? 'selected' : ''; ?>" style="padding: 15px; margin: 10px 0; border: 2px solid <?php echo $is_selected ? '#0073aa' : '#ddd'; ?>; border-radius: 5px; background: <?php echo $is_selected ? '#f0f8ff' : 'white'; ?>; cursor: pointer;" onclick="window.location.href='?page=yoco-bulk-products&supplier=<?php echo $supplier['term_id']; ?>';">
                             <h3 style="margin: 0 0 8px 0;"><?php echo esc_html($supplier['name']); ?></h3>
                             <div style="color: #666; font-size: 13px;">
-                                <div>📦 <?php echo $total_items; ?> <?php _e('items (incl. variations)', 'yoco-backorder'); ?></div>
-                                <div>✅ <?php echo $yoco_enabled_count; ?> <?php _e('YoCo enabled', 'yoco-backorder'); ?></div>
                                 <div>🔗 <?php _e('Feed configured', 'yoco-backorder'); ?></div>
+                                <div>⚡ <?php _e('Click to load products', 'yoco-backorder'); ?></div>
                             </div>
                         </div>
                     <?php endforeach; ?>
@@ -485,5 +432,10 @@ jQuery(document).ready(function($) {
 
 #select-all {
     transform: scale(1.3);
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
 }
 </style>

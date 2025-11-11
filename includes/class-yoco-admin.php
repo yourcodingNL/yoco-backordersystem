@@ -46,9 +46,14 @@ class YoCo_Admin {
         add_action('wp_ajax_yoco_test_supplier_feed', array($this, 'ajax_test_supplier_feed'));
         add_action('wp_ajax_yoco_test_ftp_connection', array($this, 'ajax_test_ftp_connection'));
         add_action('wp_ajax_yoco_sync_supplier', array($this, 'ajax_sync_supplier'));
+        add_action('wp_ajax_yoco_sync_all_active_suppliers', array($this, 'ajax_sync_all_active_suppliers'));
         add_action('wp_ajax_yoco_check_product_stock', array($this, 'ajax_check_product_stock'));
+        add_action('wp_ajax_yoco_upgrade_database', array($this, 'ajax_upgrade_database'));
         add_action('wp_ajax_yoco_clean_old_logs', array($this, 'ajax_clean_old_logs'));
         add_action('wp_ajax_yoco_sync_all_suppliers', array($this, 'ajax_sync_all_suppliers'));
+        add_action('wp_ajax_yoco_test_cron_now', array($this, 'ajax_test_cron_now'));
+        add_action('wp_ajax_yoco_clear_cron_logs', array($this, 'ajax_clear_cron_logs'));
+        add_action('wp_ajax_yoco_cron_heartbeat', array($this, 'ajax_cron_heartbeat'));
     }
     
     /**
@@ -369,12 +374,23 @@ class YoCo_Admin {
         // EMERGENCY FIX: Ensure variable product parents have correct YoCo settings
         $this->fix_variable_product_parents();
         
-        // Get all active suppliers with feeds
+        // Get all active suppliers with feeds (URL or FTP)
         $suppliers = YoCo_Supplier::get_suppliers();
         $active_suppliers = array();
         
         foreach ($suppliers as $supplier) {
-            if (!empty($supplier['settings']['feed_url']) && $supplier['settings']['is_active']) {
+            // CHECK FOR BOTH URL AND FTP CONFIGURATION
+            $has_feed_config = false;
+            if (!empty($supplier['settings']['feed_url'])) {
+                $has_feed_config = true; // URL mode
+            } elseif ($supplier['settings']['connection_type'] === 'ftp' && 
+                     !empty($supplier['settings']['ftp_host']) && 
+                     !empty($supplier['settings']['ftp_user']) && 
+                     !empty($supplier['settings']['ftp_path'])) {
+                $has_feed_config = true; // FTP mode
+            }
+            
+            if ($has_feed_config && $supplier['settings']['is_active']) {
                 $active_suppliers[] = $supplier;
             }
         }
@@ -396,7 +412,12 @@ class YoCo_Admin {
             $progress[] = "🔄 Syncing supplier: " . $supplier['name'];
             
             try {
-                $progress[] = "📥 Downloading CSV feed from: " . $supplier['settings']['feed_url'];
+                // Show appropriate source info
+                if ($supplier['settings']['connection_type'] === 'ftp') {
+                    $progress[] = "📥 Downloading CSV from FTP: " . $supplier['settings']['ftp_host'] . $supplier['settings']['ftp_path'];
+                } else {
+                    $progress[] = "📥 Downloading CSV feed from: " . $supplier['settings']['feed_url'];
+                }
                 $progress[] = "🔍 Parsing CSV with delimiter: '" . $supplier['settings']['csv_delimiter'] . "'";
                 
                 $result = YoCo_Sync::manual_sync($supplier['term_id']);
@@ -487,5 +508,104 @@ class YoCo_Admin {
         }
         
         error_log("YOCO: Fixed " . count($parent_ids) . " variable product parents");
+    }
+    
+    /**
+     * AJAX: Test cron job now
+     */
+    public function ajax_test_cron_now() {
+        check_ajax_referer('yoco_admin_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_die(__('You do not have sufficient permissions to access this page.', 'yoco-backorder'));
+        }
+        
+        // Log that we're doing a manual test
+        error_log('YOCO CRON: Manual test triggered from dashboard');
+        
+        // FORCE RUN SCHEDULE CHECK FIRST
+        YoCo_Cron::schedule_events();
+        
+        // Run the sync function
+        YoCo_Cron::sync_suppliers_cron();
+        
+        wp_send_json(array(
+            'success' => true,
+            'message' => __('Cron test completed! Check WordPress error logs for results.', 'yoco-backorder')
+        ));
+    }
+    
+    /**
+     * AJAX: Clear cron logs
+     */
+    public function ajax_clear_cron_logs() {
+        check_ajax_referer('yoco_admin_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_die(__('You do not have sufficient permissions to access this page.', 'yoco-backorder'));
+        }
+        
+        // Clear cron history
+        delete_option('yoco_cron_history');
+        delete_option('yoco_last_test_sync');
+        
+        wp_send_json(array(
+            'success' => true,
+            'message' => __('Cron logs cleared successfully.', 'yoco-backorder')
+        ));
+    }
+    
+    /**
+     * AJAX: Cron heartbeat - self-triggering cron system
+     */
+    public function ajax_cron_heartbeat() {
+        check_ajax_referer('yoco_admin_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_die(__('You do not have sufficient permissions to access this page.', 'yoco-backorder'));
+        }
+        
+        // Check if cron is enabled
+        if (get_option('yoco_cron_enabled') !== 'yes') {
+            wp_send_json(array(
+                'success' => true,
+                'debug' => 'Cron disabled - heartbeat idle'
+            ));
+            return;
+        }
+        
+        // DIRECT SYNC CHECK - BYPASS WORDPRESS CRON COMPLETELY
+        $test_mode = get_option('yoco_cron_test_mode', 'no') === 'yes';
+        $last_heartbeat_sync = get_option('yoco_last_heartbeat_sync', 0);
+        $current_time = current_time('timestamp');
+        
+        if ($test_mode) {
+            $interval = get_option('yoco_cron_test_interval', 5) * 60; // minutes to seconds
+            
+            if ($current_time - $last_heartbeat_sync >= $interval) {
+                // TIME FOR SYNC!
+                update_option('yoco_last_heartbeat_sync', $current_time);
+                
+                // Run sync directly
+                YoCo_Cron::sync_suppliers_cron();
+                
+                wp_send_json(array(
+                    'success' => true,
+                    'debug' => 'Heartbeat triggered sync (test mode)'
+                ));
+            } else {
+                $remaining = $interval - ($current_time - $last_heartbeat_sync);
+                wp_send_json(array(
+                    'success' => true,
+                    'debug' => "Waiting {$remaining}s for next sync"
+                ));
+            }
+        } else {
+            // NORMAL MODE - Check sync times
+            wp_send_json(array(
+                'success' => true,
+                'debug' => 'Heartbeat active (normal mode)'
+            ));
+        }
     }
 }

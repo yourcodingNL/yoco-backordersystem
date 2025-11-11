@@ -92,6 +92,7 @@ if (!class_exists('YoCo_Backorder_System')) {
             include_once YOCO_ABSPATH . 'includes/class-yoco-supplier.php';
             include_once YOCO_ABSPATH . 'includes/class-yoco-product.php';
             include_once YOCO_ABSPATH . 'includes/class-yoco-sync.php';
+            include_once YOCO_ABSPATH . 'includes/class-yoco-cron.php';
             
             // Functions file for shared utilities
             if (file_exists(YOCO_ABSPATH . 'includes/yoco-functions.php')) {
