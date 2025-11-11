@@ -26,10 +26,55 @@ foreach ($suppliers as $supplier) {
     if ($supplier['settings']['is_active']) {
         $active_suppliers++;
     }
+    // CHECK FOR BOTH URL AND FTP CONFIGURATION
     if (!empty($supplier['settings']['feed_url'])) {
-        $configured_suppliers++;
+        $configured_suppliers++; // URL mode
+    } elseif ($supplier['settings']['connection_type'] === 'ftp' && 
+             !empty($supplier['settings']['ftp_host']) && 
+             !empty($supplier['settings']['ftp_user']) && 
+             !empty($supplier['settings']['ftp_path'])) {
+        $configured_suppliers++; // FTP mode
     }
 }
+
+// Get product stats - with debug info
+global $wpdb;
+
+// Debug: Show what we're looking for
+echo '<div style="background: #fff3cd; padding: 10px; margin: 10px 0; border: 1px solid #ffeaa7;">';
+echo '<h4>YoCo Debug Info:</h4>';
+
+// Check if our database tables exist
+$tables_exist = array();
+$schema = array(
+    'supplier_settings' => $wpdb->prefix . 'yoco_supplier_settings',
+    'supplier_stock' => $wpdb->prefix . 'yoco_supplier_stock', 
+    'sync_logs' => $wpdb->prefix . 'yoco_sync_logs'
+);
+
+foreach ($schema as $name => $table) {
+    $exists = $wpdb->get_var("SHOW TABLES LIKE '{$table}'");
+    $tables_exist[$name] = !empty($exists);
+    echo "Table {$name}: " . ($tables_exist[$name] ? '✅ EXISTS' : '❌ MISSING') . "<br>";
+}
+
+// Debug the product count query
+$debug_query = "SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = '_yoco_backorder_enabled' AND meta_value = 'yes'";
+echo "<br><strong>Product Query:</strong><br><code>{$debug_query}</code><br>";
+
+$total_products = $wpdb->get_var($debug_query);
+echo "<strong>Result:</strong> {$total_products} products found<br>";
+
+// Show some actual meta values to debug
+$sample_meta = $wpdb->get_results("SELECT post_id, meta_key, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_yoco_backorder_enabled' LIMIT 5", ARRAY_A);
+echo "<br><strong>Sample meta data:</strong><br>";
+foreach ($sample_meta as $meta) {
+    echo "Post ID {$meta['post_id']}: {$meta['meta_key']} = '{$meta['meta_value']}'<br>";
+}
+
+$products_with_stock = $wpdb->get_var("SELECT COUNT(DISTINCT product_id) FROM {$wpdb->prefix}yoco_supplier_stock WHERE stock_quantity > 0");
+
+echo "</div>";
 ?>
 
 <div class="wrap">
@@ -111,6 +156,23 @@ foreach ($suppliers as $supplier) {
                     <span style="color: #666;">●</span>
                     <?php _e('Timezone:', 'yoco-backorder'); ?>
                     <strong><?php echo wp_timezone_string(); ?></strong>
+                </div>
+                <div style="margin: 5px 0;">
+                    <span style="color: #666;">●</span>
+                    <?php 
+                    // Debug: Count active suppliers
+                    $debug_suppliers = 0;
+                    if (class_exists('YoCo_Supplier') && method_exists('YoCo_Supplier', 'get_suppliers')) {
+                        $all_suppliers = YoCo_Supplier::get_suppliers();
+                        foreach ($all_suppliers as $supplier) {
+                            if (!empty($supplier['settings']['feed_url']) && $supplier['settings']['is_active']) {
+                                $debug_suppliers++;
+                            }
+                        }
+                    }
+                    ?>
+                    <?php _e('Active Suppliers:', 'yoco-backorder'); ?>
+                    <strong style="color: <?php echo $debug_suppliers > 0 ? '#46b450' : '#dc3232'; ?>;"><?php echo $debug_suppliers; ?></strong>
                 </div>
             </div>
             <div style="margin-top: 15px;">
@@ -217,35 +279,121 @@ jQuery(document).ready(function($) {
     $('#sync-all-suppliers').on('click', function() {
         var button = $(this);
         
+        console.log('Sync all button clicked');
+        
         if (!confirm('<?php esc_js(_e("This will sync all active suppliers. Continue?", "yoco-backorder")); ?>')) {
             return;
         }
         
         button.prop('disabled', true).text('<?php esc_js(_e("Syncing...", "yoco-backorder")); ?>');
-        $('#quick-actions-result').html('<span style="color: #666;"><?php esc_js(_e("Starting sync...", "yoco-backorder")); ?></span>');
         
-        // This would need to be implemented in the backend
-        setTimeout(function() {
-            button.prop('disabled', false).text('<?php esc_js(_e("Sync All Active Suppliers", "yoco-backorder")); ?>');
-            $('#quick-actions-result').html('<span style="color: #46b450;"><?php esc_js(_e("Sync completed", "yoco-backorder")); ?></span>');
-        }, 3000);
+        // Create progress area
+        var progressHtml = '<div id="sync-progress" style="margin-top: 15px; padding: 15px; background: #f9f9f9; border-radius: 5px; max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px; line-height: 1.4;"></div>';
+        $('#quick-actions-result').html(progressHtml);
+        
+        function addProgressLine(text) {
+            var timestamp = new Date().toLocaleTimeString('nl-NL', {
+                timeZone: 'Europe/Amsterdam',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+            $('#sync-progress').append('<div>[' + timestamp + '] ' + text + '</div>');
+            $('#sync-progress').scrollTop($('#sync-progress')[0].scrollHeight);
+        }
+        
+        addProgressLine('🚀 Starting sync of all active suppliers...');
+        
+        // Debug info
+        console.log('AJAX URL:', yoco_admin.ajax_url);
+        console.log('Nonce:', yoco_admin.nonce);
+        
+        $.ajax({
+            url: yoco_admin.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'yoco_sync_all_suppliers',
+                nonce: yoco_admin.nonce
+            },
+            timeout: 300000, // 5 minutes timeout for big syncs
+            success: function(response) {
+                console.log('AJAX Success:', response);
+                if (response.success) {
+                    // Show detailed progress
+                    if (response.progress) {
+                        response.progress.forEach(function(line) {
+                            if (line.trim() !== '') {
+                                addProgressLine(line);
+                            }
+                        });
+                    }
+                    
+                    addProgressLine('');
+                    addProgressLine('✨ ' + response.message);
+                    
+                    // Show final result
+                    setTimeout(function() {
+                        var resultHtml = '<div style="background: #d4edda; border: 1px solid #c3e6cb; padding: 10px; border-radius: 5px; margin-top: 10px;">';
+                        resultHtml += '<strong>✅ Sync Completed!</strong><br>';
+                        resultHtml += response.message;
+                        resultHtml += '</div>';
+                        $('#quick-actions-result').append(resultHtml);
+                        
+                        // Auto-refresh after 5 seconds
+                        setTimeout(function() {
+                            location.reload();
+                        }, 5000);
+                    }, 2000);
+                } else {
+                    addProgressLine('❌ Error: ' + response.message);
+                    $('#quick-actions-result').append('<div style="color: #dc3232; margin-top: 10px;">Error: ' + response.message + '</div>');
+                }
+            },
+            error: function(xhr, status, error) {
+                console.log('AJAX Error:', xhr, status, error);
+                addProgressLine('💥 AJAX error: ' + error);
+                $('#quick-actions-result').append('<div style="color: #dc3232; margin-top: 10px;">AJAX error: ' + error + '</div>');
+            },
+            complete: function() {
+                button.prop('disabled', false).text('<?php esc_js(_e("Sync All Active Suppliers", "yoco-backorder")); ?>');
+            }
+        });
     });
     
     // Clean logs
     $('#clean-logs').on('click', function() {
         var button = $(this);
         
-        if (!confirm('<?php esc_js(_e("This will remove logs older than 30 days. Continue?", "yoco-backorder")); ?>')) {
+        if (!confirm('<?php esc_js(_e("This will remove ALL sync logs. Continue?", "yoco-backorder")); ?>')) {
             return;
         }
         
         button.prop('disabled', true).text('<?php esc_js(_e("Cleaning...", "yoco-backorder")); ?>');
         
-        // This would need to be implemented in the backend
-        setTimeout(function() {
-            button.prop('disabled', false).text('<?php esc_js(_e("Clean Old Logs", "yoco-backorder")); ?>');
-            $('#quick-actions-result').html('<span style="color: #46b450;"><?php esc_js(_e("Logs cleaned", "yoco-backorder")); ?></span>');
-        }, 1000);
+        $.ajax({
+            url: yoco_admin.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'yoco_clean_old_logs',
+                nonce: yoco_admin.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    $('#quick-actions-result').html('<span style="color: #46b450;">' + response.message + '</span>');
+                    setTimeout(function() {
+                        location.reload();
+                    }, 2000);
+                } else {
+                    $('#quick-actions-result').html('<span style="color: #dc3232;">Error: ' + response.message + '</span>');
+                }
+            },
+            error: function() {
+                $('#quick-actions-result').html('<span style="color: #dc3232;">AJAX error occurred</span>');
+            },
+            complete: function() {
+                button.prop('disabled', false).text('<?php esc_js(_e("Clean Old Logs", "yoco-backorder")); ?>');
+            }
+        });
     });
 });
 </script>

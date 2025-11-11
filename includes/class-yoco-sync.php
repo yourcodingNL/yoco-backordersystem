@@ -126,13 +126,18 @@ class YoCo_Sync {
             if (!$product) continue;
             
             if ($product->is_type('variable')) {
-                // For variable products, sync all variations
-                $variations = $product->get_children();
-                foreach ($variations as $variation_id) {
-                    $variation = wc_get_product($variation_id);
-                    if ($variation) {
-                        $yoco_enabled = get_post_meta($variation_id, '_yoco_backorder_enabled', true);
-                        if ($yoco_enabled === 'yes') {
+                // Variable product parent - check if parent has YoCo enabled
+                $parent_yoco_enabled = get_post_meta($post->ID, '_yoco_backorder_enabled', true);
+                
+                if ($parent_yoco_enabled === 'yes') {
+                    // Parent has YoCo enabled - sync ALL variations
+                    $variations = $product->get_children();
+                    foreach ($variations as $variation_id) {
+                        $variation = wc_get_product($variation_id);
+                        if ($variation) {
+                            // Ensure variation has YoCo enabled (sync with parent)
+                            update_post_meta($variation_id, '_yoco_backorder_enabled', 'yes');
+                            
                             $products_to_sync[] = array(
                                 'id' => $variation_id,
                                 'product' => $variation,
@@ -142,14 +147,33 @@ class YoCo_Sync {
                         }
                     }
                 }
+            } elseif ($product->is_type('variation')) {
+                // Individual variation found (shouldn't happen with new logic, but handle it)
+                $parent_id = $product->get_parent_id();
+                $parent_yoco_enabled = get_post_meta($parent_id, '_yoco_backorder_enabled', true);
+                
+                if ($parent_yoco_enabled === 'yes') {
+                    // Sync with parent setting
+                    update_post_meta($post->ID, '_yoco_backorder_enabled', 'yes');
+                    
+                    $products_to_sync[] = array(
+                        'id' => $post->ID,
+                        'product' => $product,
+                        'type' => 'variation',
+                        'parent_id' => $parent_id
+                    );
+                }
             } else {
-                // For simple products
-                $products_to_sync[] = array(
-                    'id' => $post->ID,
-                    'product' => $product,
-                    'type' => 'simple',
-                    'parent_id' => null
-                );
+                // Simple product - use individual YoCo setting
+                $yoco_enabled = get_post_meta($post->ID, '_yoco_backorder_enabled', true);
+                if ($yoco_enabled === 'yes') {
+                    $products_to_sync[] = array(
+                        'id' => $post->ID,
+                        'product' => $product,
+                        'type' => 'simple',
+                        'parent_id' => null
+                    );
+                }
             }
         }
         

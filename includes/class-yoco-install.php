@@ -62,7 +62,14 @@ class YoCo_Install {
         CREATE TABLE IF NOT EXISTS {$wpdb->prefix}yoco_supplier_settings (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             supplier_term_id bigint(20) unsigned NOT NULL,
+            connection_type varchar(10) DEFAULT 'url',
             feed_url text DEFAULT NULL,
+            ftp_host varchar(255) DEFAULT '',
+            ftp_port int(5) DEFAULT 21,
+            ftp_user varchar(255) DEFAULT '',
+            ftp_pass varchar(255) DEFAULT '',
+            ftp_path varchar(255) DEFAULT '',
+            ftp_passive tinyint(1) DEFAULT 1,
             update_frequency int(11) DEFAULT 1,
             update_times text DEFAULT NULL,
             default_delivery_time varchar(255) DEFAULT '',
@@ -103,6 +110,7 @@ class YoCo_Install {
             products_updated int(11) DEFAULT 0,
             errors_count int(11) DEFAULT 0,
             error_messages text DEFAULT NULL,
+            sync_statistics text DEFAULT NULL,
             started_at datetime DEFAULT CURRENT_TIMESTAMP,
             completed_at datetime DEFAULT NULL,
             PRIMARY KEY (id),
@@ -114,6 +122,38 @@ class YoCo_Install {
         
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         dbDelta($tables);
+        
+        // Add FTP columns to existing installations
+        $supplier_table = $wpdb->prefix . 'yoco_supplier_settings';
+        
+        // Check if FTP columns exist, if not add them
+        $columns = $wpdb->get_results("SHOW COLUMNS FROM {$supplier_table}");
+        $column_names = array_column($columns, 'Field');
+        
+        $ftp_columns = array(
+            'connection_type' => "ALTER TABLE {$supplier_table} ADD COLUMN connection_type varchar(10) DEFAULT 'url' AFTER supplier_term_id",
+            'ftp_host' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_host varchar(255) DEFAULT '' AFTER feed_url",
+            'ftp_port' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_port int(5) DEFAULT 21 AFTER ftp_host",
+            'ftp_user' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_user varchar(255) DEFAULT '' AFTER ftp_port",
+            'ftp_pass' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_pass varchar(255) DEFAULT '' AFTER ftp_user",
+            'ftp_path' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_path varchar(255) DEFAULT '' AFTER ftp_pass",
+            'ftp_passive' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_passive tinyint(1) DEFAULT 1 AFTER ftp_path"
+        );
+        
+        foreach ($ftp_columns as $column_name => $sql) {
+            if (!in_array($column_name, $column_names)) {
+                $wpdb->query($sql);
+            }
+        }
+        
+        // Check if sync_statistics column exists, if not add it
+        $log_table = $wpdb->prefix . 'yoco_sync_logs';
+        $log_columns = $wpdb->get_results("SHOW COLUMNS FROM {$log_table}");
+        $log_column_names = array_column($log_columns, 'Field');
+        
+        if (!in_array('sync_statistics', $log_column_names)) {
+            $wpdb->query("ALTER TABLE {$log_table} ADD COLUMN sync_statistics text DEFAULT NULL AFTER error_messages");
+        }
     }
     
     /**

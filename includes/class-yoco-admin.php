@@ -44,8 +44,11 @@ class YoCo_Admin {
         
         // AJAX hooks
         add_action('wp_ajax_yoco_test_supplier_feed', array($this, 'ajax_test_supplier_feed'));
+        add_action('wp_ajax_yoco_test_ftp_connection', array($this, 'ajax_test_ftp_connection'));
         add_action('wp_ajax_yoco_sync_supplier', array($this, 'ajax_sync_supplier'));
         add_action('wp_ajax_yoco_check_product_stock', array($this, 'ajax_check_product_stock'));
+        add_action('wp_ajax_yoco_clean_old_logs', array($this, 'ajax_clean_old_logs'));
+        add_action('wp_ajax_yoco_sync_all_suppliers', array($this, 'ajax_sync_all_suppliers'));
     }
     
     /**
@@ -155,6 +158,7 @@ class YoCo_Admin {
         register_setting('yoco_settings', 'yoco_frontend_text');
         register_setting('yoco_settings', 'yoco_cron_enabled');
         register_setting('yoco_settings', 'yoco_debug_mode');
+        register_setting('yoco_settings', 'yoco_auto_sync_on_save');
     }
     
     /**
@@ -236,6 +240,29 @@ class YoCo_Admin {
     }
     
     /**
+     * AJAX: Test FTP connection
+     */
+    public function ajax_test_ftp_connection() {
+        check_ajax_referer('yoco_admin_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_die(__('You do not have sufficient permissions to access this page.', 'yoco-backorder'));
+        }
+        
+        $ftp_host = sanitize_text_field($_POST['ftp_host']);
+        $ftp_port = intval($_POST['ftp_port']);
+        $ftp_user = sanitize_text_field($_POST['ftp_user']);
+        $ftp_pass = sanitize_text_field($_POST['ftp_pass']);
+        $ftp_path = sanitize_text_field($_POST['ftp_path']);
+        $ftp_passive = intval($_POST['ftp_passive']);
+        $delimiter = sanitize_text_field($_POST['delimiter']);
+        
+        $response = YoCo_Supplier::test_ftp_connection($ftp_host, $ftp_port, $ftp_user, $ftp_pass, $ftp_path, $ftp_passive, $delimiter);
+        
+        wp_send_json($response);
+    }
+    
+    /**
      * AJAX: Sync supplier
      */
     public function ajax_sync_supplier() {
@@ -263,9 +290,202 @@ class YoCo_Admin {
         }
         
         $product_id = intval($_POST['product_id']);
+        $product = wc_get_product($product_id);
         
-        $response = YoCo_Product::check_supplier_stock($product_id);
+        if (!$product) {
+            wp_send_json(array(
+                'success' => false,
+                'message' => __('Product not found', 'yoco-backorder')
+            ));
+            return;
+        }
         
-        wp_send_json($response);
+        if ($product->is_type('variable')) {
+            // For variable products, check all variations
+            $variations = $product->get_children();
+            $results = array();
+            $total_checked = 0;
+            $total_updated = 0;
+            
+            foreach ($variations as $variation_id) {
+                $variation = wc_get_product($variation_id);
+                if (!$variation) continue;
+                
+                $yoco_enabled = get_post_meta($variation_id, '_yoco_backorder_enabled', true);
+                if ($yoco_enabled !== 'yes') continue;
+                
+                $result = YoCo_Product::check_supplier_stock($variation_id);
+                if ($result['success']) {
+                    $total_updated++;
+                }
+                $total_checked++;
+            }
+            
+            wp_send_json(array(
+                'success' => true,
+                'message' => sprintf(__('Checked %d variations, updated %d with supplier stock.', 'yoco-backorder'), 
+                    $total_checked, $total_updated)
+            ));
+        } else {
+            // For simple products, use existing logic
+            $response = YoCo_Product::check_supplier_stock($product_id);
+            wp_send_json($response);
+        }
+    }
+    
+    /**
+     * AJAX: Clean old logs
+     */
+    public function ajax_clean_old_logs() {
+        check_ajax_referer('yoco_admin_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_die(__('You do not have sufficient permissions to access this page.', 'yoco-backorder'));
+        }
+        
+        // Clean ALL logs, not just old ones
+        global $wpdb;
+        $table = $wpdb->prefix . 'yoco_sync_logs';
+        
+        $total_logs = $wpdb->get_var("SELECT COUNT(*) FROM {$table}");
+        $deleted = $wpdb->query("TRUNCATE TABLE {$table}");
+        
+        wp_send_json(array(
+            'success' => true,
+            'message' => sprintf(__('Successfully cleaned ALL %d log entries.', 'yoco-backorder'), $total_logs)
+        ));
+    }
+    
+    /**
+     * AJAX: Sync all active suppliers
+     */
+    public function ajax_sync_all_suppliers() {
+        check_ajax_referer('yoco_admin_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_die(__('You do not have sufficient permissions to access this page.', 'yoco-backorder'));
+        }
+        
+        // EMERGENCY FIX: Ensure variable product parents have correct YoCo settings
+        $this->fix_variable_product_parents();
+        
+        // Get all active suppliers with feeds
+        $suppliers = YoCo_Supplier::get_suppliers();
+        $active_suppliers = array();
+        
+        foreach ($suppliers as $supplier) {
+            if (!empty($supplier['settings']['feed_url']) && $supplier['settings']['is_active']) {
+                $active_suppliers[] = $supplier;
+            }
+        }
+        
+        if (empty($active_suppliers)) {
+            wp_send_json(array(
+                'success' => false,
+                'message' => __('No active suppliers with configured feeds found.', 'yoco-backorder')
+            ));
+            return;
+        }
+        
+        $progress = array();
+        $total_processed = 0;
+        $total_updated = 0;
+        $errors = array();
+        
+        foreach ($active_suppliers as $index => $supplier) {
+            $progress[] = "🔄 Syncing supplier: " . $supplier['name'];
+            
+            try {
+                $progress[] = "📥 Downloading CSV feed from: " . $supplier['settings']['feed_url'];
+                $progress[] = "🔍 Parsing CSV with delimiter: '" . $supplier['settings']['csv_delimiter'] . "'";
+                
+                $result = YoCo_Sync::manual_sync($supplier['term_id']);
+                
+                if ($result['success']) {
+                    $progress[] = "✅ " . $supplier['name'] . ": Processed " . $result['data']['processed'] . " items, updated " . $result['data']['updated'];
+                    $progress[] = "🗑️ CSV cache cleaned for " . $supplier['name'];
+                    $total_processed += $result['data']['processed'];
+                    $total_updated += $result['data']['updated'];
+                    
+                    if (!empty($result['data']['errors'])) {
+                        $errors = array_merge($errors, $result['data']['errors']);
+                        $progress[] = "⚠️ " . count($result['data']['errors']) . " errors occurred";
+                    }
+                } else {
+                    $progress[] = "❌ " . $supplier['name'] . ": " . $result['message'];
+                    $errors[] = $supplier['name'] . ': ' . $result['message'];
+                }
+                
+                $progress[] = ""; // Empty line for spacing
+                
+            } catch (Exception $e) {
+                $progress[] = "💥 " . $supplier['name'] . ": Exception - " . $e->getMessage();
+                $errors[] = $supplier['name'] . ': Exception - ' . $e->getMessage();
+            }
+        }
+        
+        $progress[] = "🏁 Sync completed!";
+        $progress[] = "📊 Total: " . count($active_suppliers) . " suppliers, " . $total_processed . " items processed, " . $total_updated . " updated";
+        
+        if (!empty($errors)) {
+            $progress[] = "⚠️ " . count($errors) . " errors occurred - check logs for details";
+        }
+        
+        // Auto-cleanup old logs (keep only last 100 entries)
+        global $wpdb;
+        $log_table = $wpdb->prefix . 'yoco_sync_logs';
+        $total_logs = $wpdb->get_var("SELECT COUNT(*) FROM {$log_table}");
+        
+        if ($total_logs > 100) {
+            $logs_to_delete = $total_logs - 100;
+            $wpdb->query("DELETE FROM {$log_table} ORDER BY started_at ASC LIMIT {$logs_to_delete}");
+            $progress[] = "🗑️ Auto-cleaned {$logs_to_delete} old log entries (keeping last 100)";
+        }
+        
+        wp_send_json(array(
+            'success' => true,
+            'message' => sprintf(
+                __('Synced %d suppliers. Processed %d items, updated %d.', 'yoco-backorder'),
+                count($active_suppliers),
+                $total_processed,
+                $total_updated
+            ),
+            'progress' => $progress,
+            'data' => array(
+                'suppliers_synced' => count($active_suppliers),
+                'total_processed' => $total_processed,
+                'total_updated' => $total_updated,
+                'errors' => $errors
+            )
+        ));
+    }
+    
+    /**
+     * Fix variable product parents that are missing YoCo settings
+     */
+    private function fix_variable_product_parents() {
+        global $wpdb;
+        
+        // Find variable products where variations have YoCo enabled but parent doesn't
+        $query = "
+            SELECT DISTINCT p.post_parent 
+            FROM {$wpdb->posts} p
+            INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+            LEFT JOIN {$wpdb->postmeta} pm_parent ON p.post_parent = pm_parent.post_id AND pm_parent.meta_key = '_yoco_backorder_enabled'
+            WHERE p.post_type = 'product_variation'
+            AND pm.meta_key = '_yoco_backorder_enabled' 
+            AND pm.meta_value = 'yes'
+            AND (pm_parent.meta_value IS NULL OR pm_parent.meta_value != 'yes')
+            AND p.post_parent > 0
+        ";
+        
+        $parent_ids = $wpdb->get_col($query);
+        
+        foreach ($parent_ids as $parent_id) {
+            // Set parent to YoCo enabled
+            update_post_meta($parent_id, '_yoco_backorder_enabled', 'yes');
+        }
+        
+        error_log("YOCO: Fixed " . count($parent_ids) . " variable product parents");
     }
 }

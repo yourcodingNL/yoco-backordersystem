@@ -108,7 +108,14 @@ class YoCo_Supplier {
         // Prepare data
         $data = array(
             'supplier_term_id' => $term_id,
+            'connection_type' => sanitize_text_field($settings['connection_type'] ?? 'url'),
             'feed_url' => sanitize_text_field($settings['feed_url']),
+            'ftp_host' => sanitize_text_field($settings['ftp_host'] ?? ''),
+            'ftp_port' => intval($settings['ftp_port'] ?? 21),
+            'ftp_user' => sanitize_text_field($settings['ftp_user'] ?? ''),
+            'ftp_pass' => sanitize_text_field($settings['ftp_pass'] ?? ''),
+            'ftp_path' => sanitize_text_field($settings['ftp_path'] ?? ''),
+            'ftp_passive' => intval($settings['ftp_passive'] ?? 0),
             'update_frequency' => intval($settings['update_frequency']),
             'update_times' => json_encode($settings['update_times']),
             'default_delivery_time' => sanitize_text_field($settings['default_delivery_time']),
@@ -233,11 +240,117 @@ class YoCo_Supplier {
     }
     
     /**
+     * Test FTP connection
+     */
+    public static function test_ftp_connection($host, $port, $user, $pass, $path, $passive, $delimiter = ',') {
+        if (empty($host) || empty($user) || empty($path)) {
+            return array(
+                'success' => false,
+                'message' => __('FTP host, username and file path are required', 'yoco-backorder')
+            );
+        }
+        
+        // Check if FTP extension is available
+        if (!extension_loaded('ftp')) {
+            return array(
+                'success' => false,
+                'message' => __('PHP FTP extension is not installed', 'yoco-backorder')
+            );
+        }
+        
+        try {
+            // Connect to FTP server
+            $conn = ftp_connect($host, $port, 30);
+            if (!$conn) {
+                throw new Exception(__('Could not connect to FTP server', 'yoco-backorder'));
+            }
+            
+            // Login
+            if (!ftp_login($conn, $user, $pass)) {
+                ftp_close($conn);
+                throw new Exception(__('FTP login failed - check username/password', 'yoco-backorder'));
+            }
+            
+            // Set passive mode
+            if ($passive) {
+                ftp_pasv($conn, true);
+            }
+            
+            // Check if file exists
+            $file_size = ftp_size($conn, $path);
+            if ($file_size === -1) {
+                ftp_close($conn);
+                throw new Exception(sprintf(__('File not found: %s', 'yoco-backorder'), $path));
+            }
+            
+            // Download file content (first 1000 lines for testing)
+            $temp_file = tempnam(sys_get_temp_dir(), 'yoco_ftp_test');
+            if (!ftp_get($conn, $temp_file, $path, FTP_BINARY)) {
+                ftp_close($conn);
+                unlink($temp_file);
+                throw new Exception(__('Failed to download file from FTP', 'yoco-backorder'));
+            }
+            
+            ftp_close($conn);
+            
+            // Read and parse CSV content
+            $content = file_get_contents($temp_file);
+            unlink($temp_file);
+            
+            if (empty($content)) {
+                throw new Exception(__('Downloaded file is empty', 'yoco-backorder'));
+            }
+            
+            // Parse CSV like the regular test_feed function
+            $lines = str_getcsv($content, "\n");
+            if (empty($lines)) {
+                throw new Exception(__('No data found in file', 'yoco-backorder'));
+            }
+            
+            // Get header row
+            $header = str_getcsv($lines[0], $delimiter);
+            $sample_data = array();
+            
+            // Get first few data rows
+            for ($i = 1; $i <= min(3, count($lines) - 1); $i++) {
+                if (!empty($lines[$i])) {
+                    $sample_data[] = str_getcsv($lines[$i], $delimiter);
+                }
+            }
+            
+            return array(
+                'success' => true,
+                'message' => __('FTP connection successful', 'yoco-backorder'),
+                'data' => array(
+                    'file_size' => $file_size,
+                    'total_rows' => count($lines),
+                    'columns' => $header,
+                    'sample_data' => $sample_data,
+                    'delimiter_detected' => self::detect_delimiter($lines[0])
+                )
+            );
+            
+        } catch (Exception $e) {
+            return array(
+                'success' => false,
+                'message' => $e->getMessage()
+            );
+        }
+    }
+    
+    /**
      * Get default settings
      */
     private static function get_default_settings() {
         return array(
+            'connection_type' => 'url',
             'feed_url' => '',
+            'ftp_host' => '',
+            'ftp_port' => 21,
+            'ftp_user' => '',
+            'ftp_pass' => '',
+            'ftp_path' => '',
+            'ftp_passive' => 1,
             'update_frequency' => 1,
             'update_times' => array('09:00'),
             'default_delivery_time' => '3 tot 5 werkdagen',
@@ -251,11 +364,11 @@ class YoCo_Supplier {
     }
     
     /**
-     * Get products for supplier
+     * Get products for supplier - includes both parent products and simple products with YoCo enabled
      */
     public static function get_supplier_products($term_id) {
         $args = array(
-            'post_type' => array('product', 'product_variation'),
+            'post_type' => array('product', 'product_variation'), // RESTORE: Both types needed
             'posts_per_page' => -1,
             'post_status' => 'publish',
             'meta_query' => array(

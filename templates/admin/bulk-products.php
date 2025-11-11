@@ -18,13 +18,63 @@ if (isset($_POST['bulk_update_products']) && wp_verify_nonce($_POST['yoco_bulk_n
     if (!empty($selected_products)) {
         $meta_value = ($action === 'enable') ? 'yes' : 'no';
         
-        foreach ($selected_products as $product_id) {
-            update_post_meta($product_id, '_yoco_backorder_enabled', $meta_value);
-            $updated++;
+        // BULK DATABASE UPDATE - NO INDIVIDUAL SAVES, NO WOOCOMMERCE HOOKS
+        global $wpdb;
+        
+        $product_ids = implode(',', array_map('intval', $selected_products));
+        
+        if ($action === 'enable') {
+            // Store default delivery times for products that don't have them yet
+            foreach ($selected_products as $product_id) {
+                $existing_default = get_post_meta($product_id, '_yoco_default_delivery', true);
+                if (empty($existing_default)) {
+                    $current_delivery = get_post_meta($product_id, 'rrp', true);
+                    if (empty($current_delivery)) {
+                        $current_delivery = 'Voor 17:00 uur besteld, dezelfde werkdag nog verzonden';
+                    }
+                    update_post_meta($product_id, '_yoco_default_delivery', $current_delivery);
+                }
+            }
+        } else {
+            // Restore original delivery times when disabling
+            foreach ($selected_products as $product_id) {
+                $original_delivery = get_post_meta($product_id, '_yoco_default_delivery', true);
+                if (!empty($original_delivery)) {
+                    update_post_meta($product_id, 'rrp', $original_delivery);
+                    update_post_meta($product_id, '_backorders', 'no');
+                }
+            }
         }
         
+        // Bulk update YoCo enabled status - PURE DATABASE
+        $wpdb->query($wpdb->prepare("
+            UPDATE {$wpdb->postmeta} 
+            SET meta_value = %s 
+            WHERE post_id IN ({$product_ids}) 
+            AND meta_key = '_yoco_backorder_enabled'
+        ", $meta_value));
+        
+        // Insert meta for products that don't have the meta key yet
+        $existing_ids = $wpdb->get_col("
+            SELECT DISTINCT post_id 
+            FROM {$wpdb->postmeta} 
+            WHERE post_id IN ({$product_ids}) 
+            AND meta_key = '_yoco_backorder_enabled'
+        ");
+        
+        $missing_ids = array_diff($selected_products, $existing_ids);
+        foreach ($missing_ids as $product_id) {
+            $wpdb->insert($wpdb->postmeta, array(
+                'post_id' => $product_id,
+                'meta_key' => '_yoco_backorder_enabled',
+                'meta_value' => $meta_value
+            ));
+        }
+        
+        $updated = count($selected_products);
+        
         $message = sprintf(
-            __('%d products %s for YoCo backorder successfully.', 'yoco-backorder'),
+            __('%d products %s for YoCo backorder successfully (pure database update).', 'yoco-backorder'),
             $updated,
             ($action === 'enable') ? __('enabled', 'yoco-backorder') : __('disabled', 'yoco-backorder')
         );
@@ -37,7 +87,18 @@ $suppliers_with_feeds = array();
 if (class_exists('YoCo_Supplier') && method_exists('YoCo_Supplier', 'get_suppliers')) {
     $all_suppliers = YoCo_Supplier::get_suppliers();
     foreach ($all_suppliers as $supplier) {
-        if (!empty($supplier['settings']['feed_url']) && $supplier['settings']['is_active']) {
+        // CHECK FOR BOTH URL AND FTP CONFIGURATION
+        $has_feed_config = false;
+        if (!empty($supplier['settings']['feed_url'])) {
+            $has_feed_config = true; // URL mode
+        } elseif ($supplier['settings']['connection_type'] === 'ftp' && 
+                 !empty($supplier['settings']['ftp_host']) && 
+                 !empty($supplier['settings']['ftp_user']) && 
+                 !empty($supplier['settings']['ftp_path'])) {
+            $has_feed_config = true; // FTP mode
+        }
+        
+        if ($has_feed_config && $supplier['settings']['is_active']) {
             $suppliers_with_feeds[] = $supplier;
         }
     }
@@ -73,34 +134,80 @@ if ($current_supplier) {
     
     $products = get_posts($args);
     
-    // Process products and their variations
+    // PERFORMANCE: Get all product IDs (including variations) in bulk
+    $all_product_ids = array();
+    $variation_parents = array();
+    
     foreach ($products as $product_post) {
         $product = wc_get_product($product_post->ID);
         if (!$product) continue;
         
         if ($product->is_type('variable')) {
-            // Add variations instead of parent
+            $variations = $product->get_children();
+            $all_product_ids = array_merge($all_product_ids, $variations);
+            foreach ($variations as $variation_id) {
+                $variation_parents[$variation_id] = array(
+                    'parent_id' => $product_post->ID,
+                    'parent_name' => $product->get_name()
+                );
+            }
+        } else {
+            $all_product_ids[] = $product_post->ID;
+        }
+    }
+    
+    // PERFORMANCE: Bulk query for YoCo enabled status - 1 query instead of thousands
+    $yoco_enabled = array();
+    if (!empty($all_product_ids)) {
+        global $wpdb;
+        $product_ids_string = implode(',', array_map('intval', $all_product_ids));
+        $results = $wpdb->get_results("
+            SELECT post_id, meta_value 
+            FROM {$wpdb->postmeta} 
+            WHERE post_id IN ({$product_ids_string}) 
+            AND meta_key = '_yoco_backorder_enabled'
+        ");
+        
+        foreach ($results as $result) {
+            $yoco_enabled[$result->post_id] = $result->meta_value;
+        }
+    }
+    
+    // PERFORMANCE: Bulk load WC products - this caches them
+    $wc_products = array();
+    foreach ($all_product_ids as $product_id) {
+        $wc_products[$product_id] = wc_get_product($product_id);
+    }
+    
+    // Process products and their variations with cached data
+    foreach ($products as $product_post) {
+        $product = wc_get_product($product_post->ID);
+        if (!$product) continue;
+        
+        if ($product->is_type('variable')) {
+            // Add variations using cached data
             $variations = $product->get_children();
             foreach ($variations as $variation_id) {
-                $variation = wc_get_product($variation_id);
-                if ($variation) {
+                if (isset($wc_products[$variation_id])) {
                     $supplier_products[] = array(
                         'id' => $variation_id,
-                        'product' => $variation,
+                        'product' => $wc_products[$variation_id],
                         'parent_id' => $product_post->ID,
                         'parent_name' => $product->get_name(),
-                        'type' => 'variation'
+                        'type' => 'variation',
+                        'yoco_enabled' => isset($yoco_enabled[$variation_id]) ? $yoco_enabled[$variation_id] : 'no'
                     );
                 }
             }
         } else {
-            // Add simple product
+            // Add simple product using cached data
             $supplier_products[] = array(
                 'id' => $product_post->ID,
                 'product' => $product,
                 'parent_id' => null,
                 'parent_name' => null,
-                'type' => 'simple'
+                'type' => 'simple',
+                'yoco_enabled' => isset($yoco_enabled[$product_post->ID]) ? $yoco_enabled[$product_post->ID] : 'no'
             );
         }
     }
@@ -128,7 +235,7 @@ if ($current_supplier) {
                         <?php 
                         $is_selected = ($current_supplier_id == $supplier['term_id']);
                         
-                        // Count products including variations
+                        // PERFORMANCE: Bulk count products including variations
                         $args = array(
                             'post_type' => 'product',
                             'posts_per_page' => -1,
@@ -144,32 +251,39 @@ if ($current_supplier) {
                         );
                         $products = get_posts($args);
                         
-                        $total_items = 0;
-                        $yoco_enabled_count = 0;
-                        
-                        foreach ($products as $product_id) {
-                            $product = wc_get_product($product_id);
-                            if (!$product) continue;
-                            
-                            if ($product->is_type('variable')) {
-                                // Count variations instead of parent
-                                $variations = $product->get_children();
-                                $total_items += count($variations);
+                        if (empty($products)) {
+                            $total_items = 0;
+                            $yoco_enabled_count = 0;
+                        } else {
+                            // PERFORMANCE: Get all product IDs including variations in one go
+                            $all_item_ids = array();
+                            foreach ($products as $product_id) {
+                                $product = wc_get_product($product_id);
+                                if (!$product) continue;
                                 
-                                // Count enabled variations
-                                foreach ($variations as $variation_id) {
-                                    $enabled = get_post_meta($variation_id, '_yoco_backorder_enabled', true);
-                                    if ($enabled === 'yes') {
-                                        $yoco_enabled_count++;
-                                    }
+                                if ($product->is_type('variable')) {
+                                    $variations = $product->get_children();
+                                    $all_item_ids = array_merge($all_item_ids, $variations);
+                                } else {
+                                    $all_item_ids[] = $product_id;
                                 }
+                            }
+                            
+                            $total_items = count($all_item_ids);
+                            
+                            // PERFORMANCE: Bulk query for YoCo enabled count
+                            if (!empty($all_item_ids)) {
+                                global $wpdb;
+                                $item_ids_string = implode(',', array_map('intval', $all_item_ids));
+                                $yoco_enabled_count = $wpdb->get_var("
+                                    SELECT COUNT(*) 
+                                    FROM {$wpdb->postmeta} 
+                                    WHERE post_id IN ({$item_ids_string}) 
+                                    AND meta_key = '_yoco_backorder_enabled' 
+                                    AND meta_value = 'yes'
+                                ");
                             } else {
-                                // Simple product
-                                $total_items++;
-                                $enabled = get_post_meta($product_id, '_yoco_backorder_enabled', true);
-                                if ($enabled === 'yes') {
-                                    $yoco_enabled_count++;
-                                }
+                                $yoco_enabled_count = 0;
                             }
                         }
                         ?>
@@ -242,8 +356,8 @@ if ($current_supplier) {
                                     $product = $item['product'];
                                     if (!$product) continue;
                                     
-                                    $yoco_enabled = get_post_meta($item['id'], '_yoco_backorder_enabled', true);
-                                    $is_enabled = ($yoco_enabled === 'yes');
+                                    // Use cached YoCo enabled status
+                                    $is_enabled = ($item['yoco_enabled'] === 'yes');
                                     ?>
                                     <tr>
                                         <td style="text-align: center;">

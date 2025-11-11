@@ -98,20 +98,15 @@ class YoCo_Product {
         $product = wc_get_product($post->ID);
         $is_variable = $product && $product->is_type('variable');
         
-        // Enable backorder checkbox
-        woocommerce_wp_checkbox(array(
-            'id' => '_yoco_backorder_enabled',
-            'label' => __('Enable YoCo Backorder', 'yoco-backorder'),
-            'description' => __('Enable backorder management for this product via YoCo system', 'yoco-backorder'),
-        ));
-        
-        // For variable products, add checkbox to apply to all variations
         if ($is_variable) {
+            // For variable products, show parent-level control
+            $parent_enabled = get_post_meta($post->ID, '_yoco_backorder_enabled', true);
+            
             woocommerce_wp_checkbox(array(
-                'id' => '_yoco_apply_to_all_variations',
-                'label' => __('Apply to ALL variations', 'yoco-backorder'),
-                'description' => __('Automatically enable/disable YoCo for all existing variations', 'yoco-backorder'),
-                'value' => 'yes'
+                'id' => '_yoco_backorder_enabled',
+                'label' => __('Enable YoCo for ALL variations', 'yoco-backorder'),
+                'description' => __('This will enable/disable YoCo backorder for ALL variations of this product', 'yoco-backorder'),
+                'value' => $parent_enabled
             ));
             
             // Show current variation status
@@ -137,6 +132,13 @@ class YoCo_Product {
                 }
                 echo '</span></p>';
             }
+        } else {
+            // For simple products, show simple control
+            woocommerce_wp_checkbox(array(
+                'id' => '_yoco_backorder_enabled',
+                'label' => __('Enable YoCo Backorder', 'yoco-backorder'),
+                'description' => __('Enable backorder management for this product via YoCo system', 'yoco-backorder'),
+            ));
         }
         
         // Show supplier stock info
@@ -150,37 +152,37 @@ class YoCo_Product {
      */
     public function save_product_fields($post_id) {
         $enabled = isset($_POST['_yoco_backorder_enabled']) ? 'yes' : 'no';
-        $apply_to_all = isset($_POST['_yoco_apply_to_all_variations']) ? 'yes' : 'no';
         $was_enabled = get_post_meta($post_id, '_yoco_backorder_enabled', true);
         
         $product = wc_get_product($post_id);
         
-        // For variable products, decide whether to save on parent or variations
+        // ALWAYS save parent setting
+        update_post_meta($post_id, '_yoco_backorder_enabled', $enabled);
+        
         if ($product && $product->is_type('variable')) {
-            if ($apply_to_all === 'yes') {
-                // Apply to all variations, don't save on parent
-                $variations = $product->get_children();
-                foreach ($variations as $variation_id) {
-                    $was_variation_enabled = get_post_meta($variation_id, '_yoco_backorder_enabled', true);
-                    
-                    if ($enabled === 'yes') {
-                        // Store default delivery time when first enabling YoCo
-                        if ($was_variation_enabled !== 'yes') {
-                            $this->store_default_delivery_time($variation_id);
-                        }
-                        update_post_meta($variation_id, '_yoco_backorder_enabled', $enabled);
-                        self::update_product_backorder_status($variation_id);
-                    } else {
-                        // Disabling YoCo - restore original delivery time
-                        if ($was_variation_enabled === 'yes') {
-                            $this->restore_original_delivery_time($variation_id);
-                        }
-                        update_post_meta($variation_id, '_yoco_backorder_enabled', $enabled);
-                    }
-                }
+            // For variable products, ALWAYS sync all variations with parent setting
+            $variations = $product->get_children();
+            foreach ($variations as $variation_id) {
+                $was_variation_enabled = get_post_meta($variation_id, '_yoco_backorder_enabled', true);
                 
-                // Don't save on parent for variable products when applying to all
-                return;
+                if ($enabled === 'yes') {
+                    // Store default delivery time when first enabling YoCo
+                    if ($was_variation_enabled !== 'yes') {
+                        $this->store_default_delivery_time($variation_id);
+                    }
+                    update_post_meta($variation_id, '_yoco_backorder_enabled', $enabled);
+                    
+                    // Only auto-sync if enabled in settings
+                    if (get_option('yoco_auto_sync_on_save', 'no') === 'yes') {
+                        self::update_product_backorder_status($variation_id);
+                    }
+                } else {
+                    // Disabling YoCo - restore original delivery time
+                    if ($was_variation_enabled === 'yes') {
+                        $this->restore_original_delivery_time($variation_id);
+                    }
+                    update_post_meta($variation_id, '_yoco_backorder_enabled', $enabled);
+                }
             }
         } else {
             // For simple products
@@ -189,44 +191,38 @@ class YoCo_Product {
                 if ($was_enabled !== 'yes') {
                     $this->store_default_delivery_time($post_id);
                 }
-                update_post_meta($post_id, '_yoco_backorder_enabled', $enabled);
-                self::update_product_backorder_status($post_id);
+                
+                // Only auto-sync if enabled in settings
+                if (get_option('yoco_auto_sync_on_save', 'no') === 'yes') {
+                    self::update_product_backorder_status($post_id);
+                }
             } else {
                 // Disabling YoCo - restore original delivery time
                 if ($was_enabled === 'yes') {
                     $this->restore_original_delivery_time($post_id);
                 }
-                update_post_meta($post_id, '_yoco_backorder_enabled', $enabled);
             }
         }
     }
     
     /**
-     * Add fields to variation
+     * Add fields to variation - remove YoCo setting, show only stock info
      */
     public function add_variation_fields($loop, $variation_data, $variation) {
         echo '<div class="form-row form-row-full">';
         
-        woocommerce_wp_checkbox(array(
-            'id' => "_yoco_backorder_enabled_{$loop}",
-            'name' => "_yoco_backorder_enabled[{$loop}]",
-            'label' => __('YoCo Backorder', 'yoco-backorder'),
-            'value' => get_post_meta($variation->ID, '_yoco_backorder_enabled', true),
-            'wrapper_class' => 'form-row form-row-full',
-        ));
-        
-        // Show supplier stock for variation
+        // Just show supplier stock for variation
         $this->display_supplier_stock_info($variation->ID, true);
         
         echo '</div>';
     }
     
     /**
-     * Save variation fields
+     * Save variation fields - YoCo is now controlled at parent level
      */
     public function save_variation_fields($variation_id, $i) {
-        $enabled = isset($_POST['_yoco_backorder_enabled'][$i]) ? 'yes' : 'no';
-        update_post_meta($variation_id, '_yoco_backorder_enabled', $enabled);
+        // YoCo setting is now controlled at parent level only
+        // This function kept for compatibility but does nothing
     }
     
     /**
@@ -377,6 +373,45 @@ class YoCo_Product {
         echo '<button type="button" class="button button-secondary yoco-check-stock" data-product-id="' . $product_id . '">';
         echo __('Refresh All Variation Stock', 'yoco-backorder');
         echo '</button>';
+        
+        // Add inline JavaScript for this button since admin.js might not be loaded
+        ?>
+        <script>
+        jQuery(document).ready(function($) {
+            $('.yoco-check-stock').on('click', function(e) {
+                e.preventDefault();
+                var button = $(this);
+                var productId = button.data('product-id');
+                
+                button.prop('disabled', true).text('<?php esc_js(_e("Checking...", "yoco-backorder")); ?>');
+                
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'yoco_check_product_stock',
+                        product_id: productId,
+                        nonce: '<?php echo wp_create_nonce('yoco_admin_nonce'); ?>'
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            alert('✅ ' + response.message);
+                            location.reload();
+                        } else {
+                            alert('❌ ' + response.message);
+                        }
+                    },
+                    error: function() {
+                        alert('❌ AJAX Error occurred');
+                    },
+                    complete: function() {
+                        button.prop('disabled', false).text('<?php esc_js(_e("Refresh All Variation Stock", "yoco-backorder")); ?>');
+                    }
+                });
+            });
+        });
+        </script>
+        <?php
         
         echo '</div>';
     }
@@ -629,11 +664,10 @@ class YoCo_Product {
                 $default_delivery = 'Voor 17:00 uur besteld, dezelfde werkdag nog verzonden';
             }
             
-            // Reset backorder settings completely
-            $product->set_backorders('no');
-            $product->set_stock_status('instock');
+            // Reset backorder settings - PURE DATABASE, NO WOOCOMMERCE HOOKS
+            update_post_meta($product_id, '_backorders', 'no');
+            update_post_meta($product_id, '_stock_status', 'instock');
             update_post_meta($product_id, 'rrp', $default_delivery);
-            $product->save();
             
             error_log("YOCO: Product {$product_id} has stock ({$current_stock}) - reset to normal delivery: {$default_delivery}");
             return true;
@@ -664,18 +698,21 @@ class YoCo_Product {
             }
             
             if ($has_supplier_stock) {
-                // Set backorder with supplier delivery time
-                $product->set_backorders('notify');
+                // Set backorder with supplier delivery time - PURE DATABASE, NO WOOCOMMERCE HOOKS
+                update_post_meta($product_id, '_backorders', 'notify');
+                update_post_meta($product_id, '_stock_status', 'onbackorder');
                 if (!empty($supplier_delivery_time)) {
                     update_post_meta($product_id, 'rrp', $supplier_delivery_time);
                 }
-                $product->save();
+                
+                // Sync parent stock status if this is a variation
+                self::sync_parent_stock_status($product_id);
                 
                 error_log("YOCO: Product {$product_id} no stock - set backorder with supplier delivery: {$supplier_delivery_time}");
             } else {
-                // No supplier stock either - reset backorder but keep out of stock
-                $product->set_backorders('no');
-                $product->save();
+                // No supplier stock either - reset backorder but keep out of stock - PURE DATABASE
+                update_post_meta($product_id, '_backorders', 'no');
+                update_post_meta($product_id, '_stock_status', 'outofstock');
                 
                 error_log("YOCO: Product {$product_id} no stock and no supplier stock - out of stock");
             }
@@ -685,6 +722,51 @@ class YoCo_Product {
         
         return false;
     }
+    
+    /**
+     * Update parent stock status when variation gets backorder
+     */
+    public static function sync_parent_stock_status($variation_id) {
+        $variation = wc_get_product($variation_id);
+        if (!$variation || !$variation->is_type('variation')) {
+            return false;
+        }
+        
+        $parent_id = $variation->get_parent_id();
+        if (!$parent_id) return false;
+        
+        // Check if parent is currently out of stock
+        $parent_stock_status = get_post_meta($parent_id, '_stock_status', true);
+        
+        if ($parent_stock_status === 'outofstock') {
+            // Check if any variation is now on backorder
+            $parent = wc_get_product($parent_id);
+            if ($parent && $parent->is_type('variable')) {
+                $variations = $parent->get_children();
+                $has_backorder = false;
+                
+                foreach ($variations as $var_id) {
+                    $var_backorders = get_post_meta($var_id, '_backorders', true);
+                    $var_stock_status = get_post_meta($var_id, '_stock_status', true);
+                    
+                    if ($var_backorders === 'notify' || $var_stock_status === 'onbackorder') {
+                        $has_backorder = true;
+                        break;
+                    }
+                }
+                
+                // If any variation is on backorder, set parent to backorder too
+                if ($has_backorder) {
+                    update_post_meta($parent_id, '_stock_status', 'onbackorder');
+                    error_log("YOCO: Parent {$parent_id} set to backorder due to variation {$variation_id}");
+                    return true;
+                }
+            }
+        }
+        
+        return false;
+    }
+    
     
     /**
      * Handle stock changes - update backorder status automatically
@@ -757,14 +839,10 @@ class YoCo_Product {
     private function restore_original_delivery_time($product_id) {
         $original_delivery = get_post_meta($product_id, '_yoco_default_delivery', true);
         if (!empty($original_delivery)) {
+            // PURE DATABASE - NO WOOCOMMERCE HOOKS
             update_post_meta($product_id, 'rrp', $original_delivery);
-            
-            // Reset backorder to no
-            $product = wc_get_product($product_id);
-            if ($product) {
-                $product->set_backorders('no');
-                $product->save();
-            }
+            update_post_meta($product_id, '_backorders', 'no');
+            update_post_meta($product_id, '_stock_status', 'instock');
             
             error_log("YOCO: Restored original delivery time for product {$product_id}: {$original_delivery}");
         }

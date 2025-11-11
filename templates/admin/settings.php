@@ -17,7 +17,14 @@ if (isset($_POST['repair_database']) && wp_verify_nonce($_POST['yoco_repair_nonc
         "CREATE TABLE IF NOT EXISTS {$wpdb->prefix}yoco_supplier_settings (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             supplier_term_id bigint(20) unsigned NOT NULL,
+            connection_type varchar(10) DEFAULT 'url',
             feed_url text DEFAULT NULL,
+            ftp_host varchar(255) DEFAULT '',
+            ftp_port int(5) DEFAULT 21,
+            ftp_user varchar(255) DEFAULT '',
+            ftp_pass varchar(255) DEFAULT '',
+            ftp_path varchar(255) DEFAULT '',
+            ftp_passive tinyint(1) DEFAULT 1,
             update_frequency int(11) DEFAULT 1,
             update_times text DEFAULT NULL,
             default_delivery_time varchar(255) DEFAULT '',
@@ -81,8 +88,37 @@ if (isset($_POST['repair_database']) && wp_verify_nonce($_POST['yoco_repair_nonc
         }
     }
     
-    if ($success == 3) {
-        echo '<div class="notice notice-success"><p><strong>✅ Database repair successful!</strong> All tables created.</p></div>';
+    // ADD FTP COLUMNS TO EXISTING TABLES
+    $supplier_table = $wpdb->prefix . 'yoco_supplier_settings';
+    $ftp_columns = array(
+        'connection_type' => "ALTER TABLE {$supplier_table} ADD COLUMN connection_type varchar(10) DEFAULT 'url' AFTER supplier_term_id",
+        'ftp_host' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_host varchar(255) DEFAULT '' AFTER feed_url",
+        'ftp_port' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_port int(5) DEFAULT 21 AFTER ftp_host",
+        'ftp_user' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_user varchar(255) DEFAULT '' AFTER ftp_port",
+        'ftp_pass' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_pass varchar(255) DEFAULT '' AFTER ftp_user",
+        'ftp_path' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_path varchar(255) DEFAULT '' AFTER ftp_pass",
+        'ftp_passive' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_passive tinyint(1) DEFAULT 1 AFTER ftp_path"
+    );
+    
+    $added_columns = array();
+    foreach ($ftp_columns as $column_name => $sql) {
+        $column_exists = $wpdb->get_results("SHOW COLUMNS FROM {$supplier_table} LIKE '{$column_name}'");
+        if (empty($column_exists)) {
+            $result = $wpdb->query($sql);
+            if ($result !== false) {
+                $added_columns[] = $column_name;
+            } else {
+                $errors[] = "FTP Column {$column_name}: " . $wpdb->last_error;
+            }
+        }
+    }
+    
+    if ($success == 3 && empty($errors)) {
+        $message = '✅ Database repair successful! All tables created.';
+        if (!empty($added_columns)) {
+            $message .= ' Added FTP columns: ' . implode(', ', $added_columns);
+        }
+        echo '<div class="notice notice-success"><p><strong>' . $message . '</strong></p></div>';
     } else {
         echo '<div class="notice notice-error"><p><strong>❌ Database repair failed!</strong><br>';
         foreach ($errors as $error) {
@@ -98,6 +134,7 @@ if (isset($_POST['save_settings']) && wp_verify_nonce($_POST['yoco_settings_nonc
     update_option('yoco_frontend_text', sanitize_text_field($_POST['yoco_frontend_text']));
     update_option('yoco_cron_enabled', isset($_POST['yoco_cron_enabled']) ? 'yes' : 'no');
     update_option('yoco_debug_mode', isset($_POST['yoco_debug_mode']) ? 'yes' : 'no');
+    update_option('yoco_auto_sync_on_save', isset($_POST['yoco_auto_sync_on_save']) ? 'yes' : 'no');
     
     echo '<div class="notice notice-success"><p>' . __('Settings saved successfully.', 'yoco-backorder') . '</p></div>';
 }
@@ -107,6 +144,7 @@ $enable_frontend = get_option('yoco_enable_frontend_display', 'no');
 $frontend_text = get_option('yoco_frontend_text', __('Available from supplier', 'yoco-backorder'));
 $cron_enabled = get_option('yoco_cron_enabled', 'no');
 $debug_mode = get_option('yoco_debug_mode', 'no');
+$auto_sync_on_save = get_option('yoco_auto_sync_on_save', 'no');
 ?>
 
 <div class="wrap">
@@ -156,6 +194,18 @@ $debug_mode = get_option('yoco_debug_mode', 'no');
                         </label>
                         <p class="description">
                             <?php _e('When enabled, suppliers will be synchronized automatically based on their configured schedules.', 'yoco-backorder'); ?>
+                        </p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><?php _e('Auto-sync on Product Save', 'yoco-backorder'); ?></th>
+                    <td>
+                        <label>
+                            <input type="checkbox" name="yoco_auto_sync_on_save" value="yes" <?php checked($auto_sync_on_save, 'yes'); ?>>
+                            <?php _e('Automatically check supplier stock when saving products', 'yoco-backorder'); ?>
+                        </label>
+                        <p class="description">
+                            <?php _e('⚠️ Warning: Disable this to save hosting resources. When disabled, you need to manually sync suppliers to update stock.', 'yoco-backorder'); ?>
                         </p>
                     </td>
                 </tr>
@@ -297,8 +347,14 @@ $debug_mode = get_option('yoco_debug_mode', 'no');
                             if (class_exists('YoCo_Supplier') && method_exists('YoCo_Supplier', 'get_suppliers')) {
                                 $suppliers = YoCo_Supplier::get_suppliers();
                                 foreach ($suppliers as $supplier) {
+                                    // CHECK FOR BOTH URL AND FTP CONFIGURATION
                                     if (!empty($supplier['settings']['feed_url'])) {
-                                        $configured++;
+                                        $configured++; // URL mode
+                                    } elseif ($supplier['settings']['connection_type'] === 'ftp' && 
+                                             !empty($supplier['settings']['ftp_host']) && 
+                                             !empty($supplier['settings']['ftp_user']) && 
+                                             !empty($supplier['settings']['ftp_path'])) {
+                                        $configured++; // FTP mode
                                     }
                                 }
                             }
