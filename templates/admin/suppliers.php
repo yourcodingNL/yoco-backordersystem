@@ -20,8 +20,6 @@ if (isset($_POST['save_supplier']) && wp_verify_nonce($_POST['yoco_nonce'], 'yoc
         'ftp_pass' => sanitize_text_field($_POST['ftp_pass'] ?? ''),
         'ftp_path' => sanitize_text_field($_POST['ftp_path'] ?? ''),
         'ftp_passive' => isset($_POST['ftp_passive']) ? 1 : 0,
-        'update_frequency' => intval($_POST['update_frequency']),
-        'update_times' => array_map('sanitize_text_field', $_POST['update_times']),
         'default_delivery_time' => sanitize_text_field($_POST['default_delivery_time']),
         'csv_delimiter' => sanitize_text_field($_POST['csv_delimiter']),
         'csv_has_header' => isset($_POST['csv_has_header']) ? 1 : 0,
@@ -290,46 +288,6 @@ if ($current_supplier_id) {
                             
                             <tr>
                                 <th scope="row">
-                                    <label for="update_frequency"><?php _e('Update Frequency', 'yoco-backorder'); ?></label>
-                                </th>
-                                <td>
-                                    <select id="update_frequency" name="update_frequency">
-                                        <?php for ($i = 1; $i <= 24; $i++): ?>
-                                            <option value="<?php echo $i; ?>" <?php selected($current_supplier['settings']['update_frequency'], $i); ?>>
-                                                <?php echo sprintf(_n('%d time per day', '%d times per day', $i, 'yoco-backorder'), $i); ?>
-                                            </option>
-                                        <?php endfor; ?>
-                                    </select>
-                                </td>
-                            </tr>
-                            
-                            <tr>
-                                <th scope="row">
-                                    <?php _e('Update Times', 'yoco-backorder'); ?>
-                                </th>
-                                <td>
-                                    <div id="update-times">
-                                        <?php 
-                                        $times = $current_supplier['settings']['update_times'];
-                                        if (empty($times)) $times = array('09:00');
-                                        foreach ($times as $index => $time): 
-                                        ?>
-                                            <div class="time-input" style="margin: 5px 0;">
-                                                <input type="time" name="update_times[]" value="<?php echo esc_attr($time); ?>">
-                                                <button type="button" class="button button-small remove-time" style="margin-left: 5px;"><?php _e('Remove', 'yoco-backorder'); ?></button>
-                                            </div>
-                                        <?php endforeach; ?>
-                                    </div>
-                                    <button type="button" id="add-time" class="button button-secondary"><?php _e('Add Time', 'yoco-backorder'); ?></button>
-                                    <p class="description">
-                                        <?php _e('Current server time:', 'yoco-backorder'); ?> <strong><?php echo current_time('H:i'); ?></strong>
-                                        (<?php echo wp_timezone_string(); ?>)
-                                    </p>
-                                </td>
-                            </tr>
-                            
-                            <tr>
-                                <th scope="row">
                                     <?php _e('Settings', 'yoco-backorder'); ?>
                                 </th>
                                 <td>
@@ -572,19 +530,6 @@ jQuery(document).ready(function($) {
             $('#stock-datalist').append('<option value="' + column + '">');
         });
     }
-    
-    // Add/remove time inputs
-    $('#add-time').off('click').on('click', function() {
-        var timeHtml = '<div class="time-input" style="margin: 5px 0;">';
-        timeHtml += '<input type="time" name="update_times[]" value="09:00">';
-        timeHtml += '<button type="button" class="button button-small remove-time" style="margin-left: 5px;"><?php esc_js(_e("Remove", "yoco-backorder")); ?></button>';
-        timeHtml += '</div>';
-        $('#update-times').append(timeHtml);
-    });
-    
-    $(document).on('click', '.remove-time', function() {
-        $(this).closest('.time-input').remove();
-    });
     
     // Manual sync
     $('#sync-supplier').on('click', function() {

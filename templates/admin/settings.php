@@ -12,6 +12,8 @@ if (isset($_POST['repair_database']) && wp_verify_nonce($_POST['yoco_repair_nonc
     global $wpdb;
     
     $charset_collate = $wpdb->get_charset_collate();
+    $errors = array();
+    $success = 0;
     
     $tables = array(
         "CREATE TABLE IF NOT EXISTS {$wpdb->prefix}yoco_supplier_settings (
@@ -50,7 +52,7 @@ if (isset($_POST['repair_database']) && wp_verify_nonce($_POST['yoco_repair_nonc
             is_available tinyint(1) DEFAULT 0,
             last_updated datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
-            UNIQUE KEY product_supplier (product_id, supplier_term_id),
+            KEY product_id (product_id),
             KEY supplier_term_id (supplier_term_id),
             KEY sku (sku),
             KEY ean (ean)
@@ -59,66 +61,32 @@ if (isset($_POST['repair_database']) && wp_verify_nonce($_POST['yoco_repair_nonc
         "CREATE TABLE IF NOT EXISTS {$wpdb->prefix}yoco_sync_logs (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
             supplier_term_id bigint(20) unsigned NOT NULL,
-            sync_type varchar(50) DEFAULT 'manual',
+            sync_type varchar(20) DEFAULT 'manual',
             status varchar(20) DEFAULT 'pending',
             products_processed int(11) DEFAULT 0,
             products_updated int(11) DEFAULT 0,
-            errors_count int(11) DEFAULT 0,
-            error_messages text DEFAULT NULL,
+            errors text DEFAULT NULL,
             started_at datetime DEFAULT CURRENT_TIMESTAMP,
             completed_at datetime DEFAULT NULL,
             PRIMARY KEY (id),
             KEY supplier_term_id (supplier_term_id),
-            KEY status (status),
-            KEY started_at (started_at)
-        ) $charset_collate;"
+            KEY status (status)
+        ) $charset_collate;",
     );
     
     require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
     
-    $success = 0;
-    $errors = array();
-    
-    foreach ($tables as $sql) {
-        $result = $wpdb->query($sql);
+    foreach ($tables as $table_sql) {
+        $result = $wpdb->query($table_sql);
         if ($result !== false) {
             $success++;
         } else {
-            $errors[] = $wpdb->last_error;
-        }
-    }
-    
-    // ADD FTP COLUMNS TO EXISTING TABLES
-    $supplier_table = $wpdb->prefix . 'yoco_supplier_settings';
-    $ftp_columns = array(
-        'connection_type' => "ALTER TABLE {$supplier_table} ADD COLUMN connection_type varchar(10) DEFAULT 'url' AFTER supplier_term_id",
-        'ftp_host' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_host varchar(255) DEFAULT '' AFTER feed_url",
-        'ftp_port' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_port int(5) DEFAULT 21 AFTER ftp_host",
-        'ftp_user' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_user varchar(255) DEFAULT '' AFTER ftp_port",
-        'ftp_pass' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_pass varchar(255) DEFAULT '' AFTER ftp_user",
-        'ftp_path' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_path varchar(255) DEFAULT '' AFTER ftp_pass",
-        'ftp_passive' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_passive tinyint(1) DEFAULT 1 AFTER ftp_path"
-    );
-    
-    $added_columns = array();
-    foreach ($ftp_columns as $column_name => $sql) {
-        $column_exists = $wpdb->get_results("SHOW COLUMNS FROM {$supplier_table} LIKE '{$column_name}'");
-        if (empty($column_exists)) {
-            $result = $wpdb->query($sql);
-            if ($result !== false) {
-                $added_columns[] = $column_name;
-            } else {
-                $errors[] = "FTP Column {$column_name}: " . $wpdb->last_error;
-            }
+            $errors[] = 'Failed to create table: ' . $wpdb->last_error;
         }
     }
     
     if ($success == 3 && empty($errors)) {
-        $message = '✅ Database repair successful! All tables created.';
-        if (!empty($added_columns)) {
-            $message .= ' Added FTP columns: ' . implode(', ', $added_columns);
-        }
-        echo '<div class="notice notice-success"><p><strong>' . $message . '</strong></p></div>';
+        echo '<div class="notice notice-success"><p><strong>✅ Database repair successful! All tables created.</strong></p></div>';
     } else {
         echo '<div class="notice notice-error"><p><strong>❌ Database repair failed!</strong><br>';
         foreach ($errors as $error) {
@@ -132,25 +100,39 @@ if (isset($_POST['repair_database']) && wp_verify_nonce($_POST['yoco_repair_nonc
 if (isset($_POST['save_settings']) && wp_verify_nonce($_POST['yoco_settings_nonce'], 'yoco_save_settings')) {
     $old_cron_enabled = get_option('yoco_cron_enabled', 'no');
     $new_cron_enabled = isset($_POST['yoco_cron_enabled']) ? 'yes' : 'no';
+    $old_test_mode = get_option('yoco_cron_test_mode', 'no');
+    $new_test_mode = isset($_POST['yoco_cron_test_mode']) ? 'yes' : 'no';
     
     update_option('yoco_enable_frontend_display', isset($_POST['yoco_enable_frontend_display']) ? 'yes' : 'no');
     update_option('yoco_frontend_text', sanitize_text_field($_POST['yoco_frontend_text']));
     update_option('yoco_cron_enabled', $new_cron_enabled);
-    update_option('yoco_cron_test_mode', isset($_POST['yoco_cron_test_mode']) ? 'yes' : 'no');
-    update_option('yoco_cron_test_interval', intval($_POST['yoco_cron_test_interval'] ?? 5));
+    update_option('yoco_cron_test_mode', $new_test_mode);
+    
+    // Test mode interval
+    $test_interval = isset($_POST['yoco_cron_test_interval']) ? intval($_POST['yoco_cron_test_interval']) : 5;
+    update_option('yoco_cron_test_interval', $test_interval);
+    
+    // Sync times
+    if (isset($_POST['yoco_sync_times']) && is_array($_POST['yoco_sync_times'])) {
+        $sync_times = array_map('sanitize_text_field', $_POST['yoco_sync_times']);
+        $sync_times = array_filter($sync_times); // Remove empty
+        update_option('yoco_sync_times', $sync_times);
+    }
+    
     update_option('yoco_debug_mode', isset($_POST['yoco_debug_mode']) ? 'yes' : 'no');
     update_option('yoco_auto_sync_on_save', isset($_POST['yoco_auto_sync_on_save']) ? 'yes' : 'no');
     
-    // Handle cron scheduling
-    if ($old_cron_enabled !== $new_cron_enabled) {
-        if ($new_cron_enabled === 'yes') {
-            YoCo_Cron::schedule_events();
-            $cron_message = __('Automatic synchronization has been enabled. Suppliers will sync at their configured times.', 'yoco-backorder');
-        } else {
-            YoCo_Cron::unschedule_events();
-            $cron_message = __('Automatic synchronization has been disabled.', 'yoco-backorder');
+    // Handle cron scheduling changes
+    if ($old_cron_enabled !== $new_cron_enabled || $old_test_mode !== $new_test_mode) {
+        if (class_exists('YoCo_Cron') && method_exists('YoCo_Cron', 'maybe_schedule_actions')) {
+            YoCo_Cron::maybe_schedule_actions();
+            
+            if ($new_cron_enabled === 'yes') {
+                echo '<div class="notice notice-success"><p>' . __('Automatic synchronization enabled and scheduled via Action Scheduler.', 'yoco-backorder') . '</p></div>';
+            } else {
+                echo '<div class="notice notice-info"><p>' . __('Automatic synchronization has been disabled.', 'yoco-backorder') . '</p></div>';
+            }
         }
-        echo '<div class="notice notice-info"><p>' . $cron_message . '</p></div>';
     }
     
     echo '<div class="notice notice-success"><p>' . __('Settings saved successfully.', 'yoco-backorder') . '</p></div>';
@@ -162,15 +144,31 @@ $frontend_text = get_option('yoco_frontend_text', __('Available from supplier', 
 $cron_enabled = get_option('yoco_cron_enabled', 'no');
 $debug_mode = get_option('yoco_debug_mode', 'no');
 $auto_sync_on_save = get_option('yoco_auto_sync_on_save', 'no');
+$sync_times = get_option('yoco_sync_times', array('03:00'));
 ?>
 
 <div class="wrap">
     <h1><?php _e('YoCo Backorder Settings', 'yoco-backorder'); ?></h1>
     
+    <!-- Database Actions - OUTSIDE main form -->
+    <div class="card" style="margin-top: 20px;">
+        <h2><?php _e('Database Actions', 'yoco-backorder'); ?></h2>
+        <p><?php _e('Use these actions to repair or clean up the database.', 'yoco-backorder'); ?></p>
+        
+        <form method="post" action="" style="margin-top: 15px;">
+            <?php wp_nonce_field('yoco_repair_database', 'yoco_repair_nonce'); ?>
+            <button type="submit" name="repair_database" class="button button-secondary">
+                <?php _e('Repair Database Tables', 'yoco-backorder'); ?>
+            </button>
+            <p class="description"><?php _e('Recreates missing database tables if needed.', 'yoco-backorder'); ?></p>
+        </form>
+    </div>
+    
+    <!-- Main Settings Form -->
     <form method="post" action="">
         <?php wp_nonce_field('yoco_save_settings', 'yoco_settings_nonce'); ?>
         
-        <div class="card" style="margin-top: 20px;">
+        <div class="card">
             <h2><?php _e('Frontend Display', 'yoco-backorder'); ?></h2>
             <table class="form-table">
                 <tr>
@@ -210,23 +208,32 @@ $auto_sync_on_save = get_option('yoco_auto_sync_on_save', 'no');
                             <?php _e('Enable automatic supplier synchronization', 'yoco-backorder'); ?>
                         </label>
                         <p class="description">
-                            <?php _e('When enabled, suppliers will be synchronized automatically based on their configured schedules.', 'yoco-backorder'); ?>
+                            <?php _e('When enabled, suppliers will be synchronized automatically via Action Scheduler.', 'yoco-backorder'); ?>
                         </p>
-                        <?php if ($cron_enabled === 'yes'): ?>
-                            <?php
-                            $next_cron = wp_next_scheduled('yoco_supplier_sync_cron');
-                            if ($next_cron) {
-                                $next_time = wp_date(get_option('date_format') . ' H:i', $next_cron);
-                                echo '<p style="color: #46b450;">✅ <strong>Active:</strong> Next check at ' . $next_time . '</p>';
-                            } else {
-                                echo '<p style="color: #dc3232;">⚠️ Cron not scheduled properly. Save settings to reschedule.</p>';
-                            }
-                            ?>
-                        <?php else: ?>
-                            <p style="color: #666;">ℹ️ Enable to automatically sync suppliers at configured times.</p>
-                        <?php endif; ?>
                     </td>
                 </tr>
+                
+                <tr>
+                    <th scope="row"><?php _e('Sync Times', 'yoco-backorder'); ?></th>
+                    <td>
+                        <div id="sync-times-container">
+                            <?php foreach ($sync_times as $index => $time): ?>
+                                <div class="sync-time-row" style="margin: 5px 0;">
+                                    <input type="time" name="yoco_sync_times[]" value="<?php echo esc_attr($time); ?>" style="width: 120px;">
+                                    <button type="button" class="button button-small remove-sync-time" style="margin-left: 5px;"><?php _e('Remove', 'yoco-backorder'); ?></button>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                        <button type="button" id="add-sync-time" class="button button-secondary" style="margin-top: 10px;">
+                            <?php _e('Add Time', 'yoco-backorder'); ?>
+                        </button>
+                        <p class="description">
+                            <?php _e('Daily sync times in your local timezone. Current server time:', 'yoco-backorder'); ?>
+                            <strong><?php echo current_time('H:i'); ?></strong>
+                        </p>
+                    </td>
+                </tr>
+                
                 <tr>
                     <th scope="row"><?php _e('Cron Test Mode', 'yoco-backorder'); ?></th>
                     <td>
@@ -235,7 +242,7 @@ $auto_sync_on_save = get_option('yoco_auto_sync_on_save', 'no');
                             <?php _e('Enable cron test mode (for development/testing)', 'yoco-backorder'); ?>
                         </label>
                         <p class="description">
-                            <?php _e('⚠️ When enabled, cron will run every X minutes instead of checking scheduled times. Disable after testing!', 'yoco-backorder'); ?>
+                            <?php _e('⚠️ When enabled, cron will run every X minutes instead of daily. Disable after testing!', 'yoco-backorder'); ?>
                         </p>
                         
                         <?php if (get_option('yoco_cron_test_mode', 'no') === 'yes'): ?>
@@ -247,6 +254,9 @@ $auto_sync_on_save = get_option('yoco_auto_sync_on_save', 'no');
                         <?php endif; ?>
                     </td>
                 </tr>
+                
+                <tr>
+                    <th scope="row"><?php _e('Auto Sync on Product Save', 'yoco-backorder'); ?></th>
                     <td>
                         <label>
                             <input type="checkbox" name="yoco_auto_sync_on_save" value="yes" <?php checked($auto_sync_on_save, 'yes'); ?>>
@@ -262,222 +272,158 @@ $auto_sync_on_save = get_option('yoco_auto_sync_on_save', 'no');
         
         <div class="card">
             <h2><?php _e('System Information', 'yoco-backorder'); ?></h2>
-            <table class="form-table">
-                <tr>
-                    <th scope="row"><?php _e('Current Server Time', 'yoco-backorder'); ?></th>
-                    <td>
-                        <strong><?php echo current_time('Y-m-d H:i:s'); ?></strong>
-                        <br>
-                        <span class="description"><?php echo __('Timezone:', 'yoco-backorder') . ' ' . wp_timezone_string(); ?></span>
-                    </td>
-                </tr>
-                <tr>
-                    <th scope="row"><?php _e('Plugin Version', 'yoco-backorder'); ?></th>
-                    <td><strong><?php echo YOCO_BACKORDER_VERSION; ?></strong></td>
-                </tr>
-                <tr>
-                    <th scope="row"><?php _e('Database Tables', 'yoco-backorder'); ?></th>
-                    <td>
-                        <?php
-                        global $wpdb;
-                        $tables = YoCo_Install::get_schema();
-                        foreach ($tables as $name => $table) {
-                            $exists = $wpdb->get_var("SHOW TABLES LIKE '{$table}'");
-                            $status = $exists ? 'success' : 'error';
-                            $icon = $exists ? '✓' : '✗';
-                            $color = $exists ? '#46b450' : '#dc3232';
-                            echo "<div style='color: {$color};'>{$icon} {$name}</div>";
-                        }
-                        ?>
-                    </td>
-                </tr>
-            </table>
-        </div>
-        
-        <div class="card">
-            <h2><?php _e('Database Actions', 'yoco-backorder'); ?></h2>
-            <table class="form-table">
-                <tr>
-                    <th scope="row"><?php _e('Database Repair', 'yoco-backorder'); ?></th>
-                    <td>
-                        <?php
-                        // Check if tables exist
-                        global $wpdb;
-                        $tables_status = array(
-                            'supplier_settings' => $wpdb->get_var("SHOW TABLES LIKE '{$wpdb->prefix}yoco_supplier_settings'"),
-                            'supplier_stock' => $wpdb->get_var("SHOW TABLES LIKE '{$wpdb->prefix}yoco_supplier_stock'"),
-                            'sync_logs' => $wpdb->get_var("SHOW TABLES LIKE '{$wpdb->prefix}yoco_sync_logs'")
-                        );
-                        
-                        $missing_tables = array();
-                        foreach ($tables_status as $name => $exists) {
-                            if (!$exists) {
-                                $missing_tables[] = $name;
-                            }
-                        }
-                        
-                        if (!empty($missing_tables)) {
-                            echo '<div style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; border-radius: 3px; margin-bottom: 10px;">';
-                            echo '<strong>⚠️ Missing Database Tables:</strong><br>';
-                            foreach ($missing_tables as $table) {
-                                echo "• {$table}<br>";
-                            }
-                            echo '</div>';
-                            
-                            echo '<form method="post" style="margin: 10px 0;">';
-                            wp_nonce_field('yoco_repair_database', 'yoco_repair_nonce');
-                            echo '<input type="submit" name="repair_database" class="button button-secondary" value="🔧 Create Missing Tables" onclick="return confirm(\'Create the missing database tables? This is safe to run.\');">';
-                            echo '</form>';
-                        } else {
-                            echo '<div style="background: #d4edda; border: 1px solid #c3e6cb; padding: 10px; border-radius: 3px;">';
-                            echo '<strong>✅ All database tables exist!</strong>';
-                            echo '</div>';
-                        }
-                        ?>
-                    </td>
-                </tr>
-                <tr>
-                    <th scope="row"><?php _e('Other Actions', 'yoco-backorder'); ?></th>
-                    <td>
-                        <button type="button" id="clean-supplier-stock" class="button button-secondary">
-                            <?php _e('Clean Supplier Stock Data', 'yoco-backorder'); ?>
-                        </button>
-                        <button type="button" id="reset-sync-logs" class="button button-secondary" style="margin-left: 10px;">
-                            <?php _e('Reset Sync Logs', 'yoco-backorder'); ?>
-                        </button>
-                        <p class="description">
-                            <?php _e('Use these actions to clean up old data. This cannot be undone.', 'yoco-backorder'); ?>
-                        </p>
-                    </td>
-                </tr>
-            </table>
-        </div>
-        
-        <div class="card">
-            <h2><?php _e('System Status', 'yoco-backorder'); ?></h2>
-            <table class="widefat fixed striped">
+            <table class="widefat striped">
                 <thead>
                     <tr>
-                        <th><?php _e('Check', 'yoco-backorder'); ?></th>
-                        <th><?php _e('Status', 'yoco-backorder'); ?></th>
+                        <th width="200"><?php _e('Check', 'yoco-backorder'); ?></th>
+                        <th width="150"><?php _e('Status', 'yoco-backorder'); ?></th>
                         <th><?php _e('Description', 'yoco-backorder'); ?></th>
                     </tr>
                 </thead>
                 <tbody>
                     <tr>
+                        <td><?php _e('Current Server Time', 'yoco-backorder'); ?></td>
+                        <td>
+                            <strong><?php echo current_time('H:i:s'); ?></strong>
+                        </td>
+                        <td>
+                            <?php echo __('Date:', 'yoco-backorder') . ' ' . current_time('Y-m-d'); ?>
+                            <br>
+                            <?php echo __('Timezone:', 'yoco-backorder') . ' ' . wp_timezone_string(); ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><?php _e('Plugin Version', 'yoco-backorder'); ?></td>
+                        <td><strong><?php echo YOCO_BACKORDER_VERSION; ?></strong></td>
+                        <td><?php _e('YoCo Backorder System version', 'yoco-backorder'); ?></td>
+                    </tr>
+                    <tr>
                         <td><?php _e('WooCommerce', 'yoco-backorder'); ?></td>
                         <td>
-                            <?php if (class_exists('WooCommerce')): ?>
-                                <span style="color: #46b450;">✓ <?php _e('Active', 'yoco-backorder'); ?></span>
-                            <?php else: ?>
-                                <span style="color: #dc3232;">✗ <?php _e('Not found', 'yoco-backorder'); ?></span>
-                            <?php endif; ?>
+                            <?php 
+                            if (class_exists('WooCommerce')) {
+                                echo '<span style="color: #46b450;">✓ ' . __('Active', 'yoco-backorder') . '</span>';
+                            } else {
+                                echo '<span style="color: #dc3232;">✗ ' . __('Not Active', 'yoco-backorder') . '</span>';
+                            }
+                            ?>
                         </td>
                         <td><?php _e('Required for plugin functionality', 'yoco-backorder'); ?></td>
                     </tr>
                     <tr>
-                        <td><?php _e('Supplier Taxonomy', 'yoco-backorder'); ?></td>
-                        <td>
-                            <?php if (taxonomy_exists('pa_xcore_suppliers')): ?>
-                                <span style="color: #46b450;">✓ <?php _e('Available', 'yoco-backorder'); ?></span>
-                            <?php else: ?>
-                                <span style="color: #dc3232;">✗ <?php _e('Not found', 'yoco-backorder'); ?></span>
-                            <?php endif; ?>
-                        </td>
-                        <td><?php _e('Product attribute for supplier assignment', 'yoco-backorder'); ?></td>
-                    </tr>
-                    <tr>
-                        <td><?php _e('Configured Suppliers', 'yoco-backorder'); ?></td>
+                        <td><?php _e('Action Scheduler', 'yoco-backorder'); ?></td>
                         <td>
                             <?php
-                            $suppliers = array();
-                            $configured = 0;
-                            if (class_exists('YoCo_Supplier') && method_exists('YoCo_Supplier', 'get_suppliers')) {
-                                $suppliers = YoCo_Supplier::get_suppliers();
-                                foreach ($suppliers as $supplier) {
-                                    // CHECK FOR BOTH URL AND FTP CONFIGURATION
-                                    if (!empty($supplier['settings']['feed_url'])) {
-                                        $configured++; // URL mode
-                                    } elseif ($supplier['settings']['connection_type'] === 'ftp' && 
-                                             !empty($supplier['settings']['ftp_host']) && 
-                                             !empty($supplier['settings']['ftp_user']) && 
-                                             !empty($supplier['settings']['ftp_path'])) {
-                                        $configured++; // FTP mode
+                            if (function_exists('as_schedule_recurring_action')) {
+                                echo '<span style="color: #46b450;">✓ ' . __('Available', 'yoco-backorder') . '</span>';
+                                
+                                if (class_exists('YoCo_Cron') && method_exists('YoCo_Cron', 'get_scheduler_status')) {
+                                    $status = YoCo_Cron::get_scheduler_status();
+                                    
+                                    if ($status['has_scheduled']) {
+                                        echo '<br><small style="color: #0073aa;">';
+                                        echo $status['pending_actions'] . ' pending';
+                                        if ($status['running_actions'] > 0) {
+                                            echo ', ' . $status['running_actions'] . ' running';
+                                        }
+                                        echo '</small>';
                                     }
+                                }
+                            } else {
+                                echo '<span style="color: #dc3232;">✗ ' . __('Not Available', 'yoco-backorder') . '</span>';
+                            }
+                            ?>
+                        </td>
+                        <td>
+                            <?php _e('WooCommerce Action Scheduler for reliable cron', 'yoco-backorder'); ?>
+                            <?php if (function_exists('as_schedule_recurring_action')): ?>
+                                <br><a href="<?php echo admin_url('tools.php?page=action-scheduler'); ?>" target="_blank">View Scheduled Actions →</a>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><?php _e('Next Scheduled Sync', 'yoco-backorder'); ?></td>
+                        <td>
+                            <?php
+                            $cron_enabled_check = get_option('yoco_cron_enabled', 'no') === 'yes';
+                            if (!$cron_enabled_check) {
+                                echo '<span style="color: #666;">—</span>';
+                            } else {
+                                if (class_exists('YoCo_Cron') && method_exists('YoCo_Cron', 'get_next_scheduled_run')) {
+                                    $next_run = YoCo_Cron::get_next_scheduled_run();
+                                    if ($next_run) {
+                                        $time_diff = $next_run['timestamp'] - current_time('timestamp');
+                                        $hours = floor($time_diff / 3600);
+                                        $minutes = floor(($time_diff % 3600) / 60);
+                                        
+                                        echo '<span style="color: #0073aa;">📅 ' . esc_html($next_run['human']) . '</span>';
+                                        
+                                        if ($next_run['mode'] === 'test') {
+                                            if ($time_diff > 0) {
+                                                echo '<br><small>In ' . $hours . 'h ' . $minutes . 'm</small>';
+                                            } else {
+                                                echo '<br><small>Running now</small>';
+                                            }
+                                        }
+                                    } else {
+                                        echo '<span style="color: #ffb900;">⚠ Not scheduled</span>';
+                                    }
+                                } else {
+                                    echo '<span style="color: #dc3232;">⚠ Unable to check</span>';
                                 }
                             }
                             ?>
-                            <span style="color: <?php echo $configured > 0 ? '#46b450' : '#dc3232'; ?>;">
-                                <?php echo $configured; ?> / <?php echo count($suppliers); ?>
-                            </span>
                         </td>
-                        <td><?php _e('Suppliers with feed configuration', 'yoco-backorder'); ?></td>
+                        <td>
+                            <?php 
+                            if (!$cron_enabled_check) {
+                                _e('Enable automatic sync to see schedule', 'yoco-backorder');
+                            } else {
+                                _e('Next automatic synchronization time', 'yoco-backorder');
+                                
+                                // Show last sync
+                                $test_mode = get_option('yoco_cron_test_mode', 'no') === 'yes';
+                                $last_sync = $test_mode 
+                                    ? get_option('yoco_last_test_sync', 0)
+                                    : get_option('yoco_last_daily_sync', 0);
+                                    
+                                if ($last_sync > 0) {
+                                    echo '<br><small style="color: #666;">Last sync: ' . wp_date('Y-m-d H:i', $last_sync) . '</small>';
+                                }
+                            }
+                            ?>
+                        </td>
                     </tr>
                     <tr>
-                        <td><?php _e('Products with YoCo', 'yoco-backorder'); ?></td>
+                        <td><?php _e('Database Tables', 'yoco-backorder'); ?></td>
                         <td>
                             <?php
                             global $wpdb;
-                            $product_count = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = '_yoco_backorder_enabled' AND meta_value = 'yes'");
-                            ?>
-                            <span style="color: <?php echo $product_count > 0 ? '#46b450' : '#999'; ?>;">
-                                <?php echo $product_count; ?>
-                            </span>
-                        </td>
-                        <td><?php _e('Products with YoCo backorder enabled', 'yoco-backorder'); ?></td>
-                    </tr>
-                    <tr>
-                        <td><?php _e('WordPress Cron System', 'yoco-backorder'); ?></td>
-                        <td>
-                            <?php 
-                            // Check if DISABLE_WP_CRON is set
-                            $wp_cron_disabled = defined('DISABLE_WP_CRON') && DISABLE_WP_CRON;
+                            $required_tables = array(
+                                $wpdb->prefix . 'yoco_supplier_settings',
+                                $wpdb->prefix . 'yoco_supplier_stock',
+                                $wpdb->prefix . 'yoco_sync_logs'
+                            );
                             
-                            // Check if there are any scheduled events
-                            $cron_array = _get_cron_array();
-                            $has_scheduled_events = !empty($cron_array);
+                            $all_exist = true;
+                            foreach ($required_tables as $table) {
+                                $exists = $wpdb->get_var("SHOW TABLES LIKE '{$table}'");
+                                if (!$exists) {
+                                    $all_exist = false;
+                                    break;
+                                }
+                            }
                             
-                            // Check if wp-cron.php is accessible
-                            $cron_url = site_url('wp-cron.php');
-                            
-                            if ($wp_cron_disabled) {
-                                echo '<span style="color: #dc3232;">✗ ' . __('Disabled', 'yoco-backorder') . '</span>';
-                                echo '<br><small style="color: #dc3232;">DISABLE_WP_CRON = true</small>';
-                            } elseif (!$has_scheduled_events) {
-                                echo '<span style="color: #ffb900;">⚠ ' . __('No Events', 'yoco-backorder') . '</span>';
-                                echo '<br><small>No scheduled events found</small>';
+                            if ($all_exist) {
+                                echo '<span style="color: #46b450;">✓ All tables exist</span>';
                             } else {
-                                echo '<span style="color: #46b450;">✓ ' . __('Active', 'yoco-backorder') . '</span>';
-                                echo '<br><small>' . count($cron_array, COUNT_RECURSIVE) . ' events scheduled</small>';
+                                echo '<span style="color: #dc3232;">✗ Missing tables</span>';
                             }
                             ?>
                         </td>
-                        <td><?php _e('WordPress cron system functionality', 'yoco-backorder'); ?></td>
-                    </tr>
-                    <tr>
-                        <td><?php _e('YoCo Cron Status', 'yoco-backorder'); ?></td>
                         <td>
-                            <?php 
-                            $cron_enabled = get_option('yoco_cron_enabled', 'no') === 'yes';
-                            $cron_scheduled = wp_next_scheduled('yoco_supplier_sync_cron');
-                            $test_mode = get_option('yoco_cron_test_mode', 'no') === 'yes';
-                            
-                            if ($cron_enabled && $cron_scheduled) {
-                                echo '<span style="color: #46b450;">✓ ' . __('Active', 'yoco-backorder') . '</span>';
-                                $next_time = wp_date('H:i', $cron_scheduled);
-                                echo '<br><small>Next: ' . $next_time . '</small>';
-                            } elseif ($cron_enabled && !$cron_scheduled) {
-                                echo '<span style="color: #ffb900;">⚠ ' . __('Not Scheduled', 'yoco-backorder') . '</span>';
-                            } else {
-                                echo '<span style="color: #dc3232;">✗ ' . __('Disabled', 'yoco-backorder') . '</span>';
-                            }
-                            
-                            if ($test_mode) {
-                                echo '<br><small style="color: #ffb900;">🧪 Test Mode</small>';
-                            }
-                            ?>
+                            <?php _e('Required database tables for plugin', 'yoco-backorder'); ?>
                         </td>
-                        <td><?php _e('YoCo automatic synchronization status', 'yoco-backorder'); ?></td>
                     </tr>
                 </tbody>
             </table>
@@ -491,49 +437,18 @@ $auto_sync_on_save = get_option('yoco_auto_sync_on_save', 'no');
 
 <script>
 jQuery(document).ready(function($) {
-    $('#clean-supplier-stock').on('click', function() {
-        if (!confirm('<?php esc_js(_e("This will remove all supplier stock data. Are you sure?", "yoco-backorder")); ?>')) {
-            return;
-        }
-        
-        var button = $(this);
-        button.prop('disabled', true).text('<?php esc_js(_e("Cleaning...", "yoco-backorder")); ?>');
-        
-        // This would need backend implementation
-        setTimeout(function() {
-            button.prop('disabled', false).text('<?php esc_js(_e("Clean Supplier Stock Data", "yoco-backorder")); ?>');
-            alert('<?php esc_js(_e("Stock data cleaned", "yoco-backorder")); ?>');
-        }, 2000);
+    // Add sync time
+    $('#add-sync-time').on('click', function() {
+        var html = '<div class="sync-time-row" style="margin: 5px 0;">' +
+            '<input type="time" name="yoco_sync_times[]" value="" style="width: 120px;">' +
+            '<button type="button" class="button button-small remove-sync-time" style="margin-left: 5px;"><?php _e('Remove', 'yoco-backorder'); ?></button>' +
+            '</div>';
+        $('#sync-times-container').append(html);
     });
     
-    $('#reset-sync-logs').on('click', function() {
-        if (!confirm('<?php esc_js(_e("This will remove all sync logs. Are you sure?", "yoco-backorder")); ?>')) {
-            return;
-        }
-        
-        var button = $(this);
-        button.prop('disabled', true).text('<?php esc_js(_e("Resetting...", "yoco-backorder")); ?>');
-        
-        // This would need backend implementation
-        setTimeout(function() {
-            button.prop('disabled', false).text('<?php esc_js(_e("Reset Sync Logs", "yoco-backorder")); ?>');
-            alert('<?php esc_js(_e("Sync logs reset", "yoco-backorder")); ?>');
-        }, 1000);
-    });
-    
-    // Toggle cron test mode fields
-    $('input[name="yoco_cron_test_mode"]').on('change', function() {
-        if ($(this).is(':checked')) {
-            var testFieldsHtml = '<div id="cron-test-fields" style="margin-top: 10px;">';
-            testFieldsHtml += '<label for="yoco_cron_test_interval"><?php esc_js(_e("Test interval (minutes):", "yoco-backorder")); ?></label> ';
-            testFieldsHtml += '<input type="number" id="yoco_cron_test_interval" name="yoco_cron_test_interval" value="5" min="1" max="60" style="width: 80px;"> ';
-            testFieldsHtml += '<span class="description"><?php esc_js(_e("Run sync every X minutes (1-60)", "yoco-backorder")); ?></span>';
-            testFieldsHtml += '</div>';
-            
-            $(this).closest('td').append(testFieldsHtml);
-        } else {
-            $('#cron-test-fields').remove();
-        }
+    // Remove sync time
+    $(document).on('click', '.remove-sync-time', function() {
+        $(this).closest('.sync-time-row').remove();
     });
 });
 </script>

@@ -1,6 +1,6 @@
 <?php
 /**
- * YoCo Cron Handler
+ * YoCo Cron Handler - Fixed timezone handling
  */
 
 if (!defined('ABSPATH')) {
@@ -9,301 +9,294 @@ if (!defined('ABSPATH')) {
 
 class YoCo_Cron {
     
-    /**
-     * Initialize cron
-     */
+    const DAILY_SYNC_HOOK = 'yoco_daily_supplier_sync';
+    const TEST_SYNC_HOOK = 'yoco_test_supplier_sync';
+    const GROUP = 'yoco-backorder-sync';
+    
     public static function init() {
-        add_action('yoco_supplier_sync_cron', array(__CLASS__, 'sync_suppliers_cron'));
-        add_action('wp', array(__CLASS__, 'schedule_events'));
-        add_action('yoco_cron_enabled_updated', array(__CLASS__, 'handle_cron_toggle'));
+        add_action(self::DAILY_SYNC_HOOK, array(__CLASS__, 'run_daily_sync'));
+        add_action(self::TEST_SYNC_HOOK, array(__CLASS__, 'run_test_sync'));
+        add_action('init', array(__CLASS__, 'maybe_schedule_actions'), 20);
+        
+        // Force Action Scheduler to process queue
+        add_action('action_scheduler_run_queue', array(__CLASS__, 'ensure_runner_active'));
     }
     
     /**
-     * Schedule cron events
+     * Ensure Action Scheduler runner is active
      */
-    public static function schedule_events() {
-        error_log("YOCO CRON: schedule_events() called");
-        
-        // Only run if cron is enabled
-        if (get_option('yoco_cron_enabled') !== 'yes') {
-            error_log("YOCO CRON: Not scheduling - cron not enabled");
+    public static function ensure_runner_active() {
+        if (!function_exists('ActionScheduler_QueueRunner')) {
             return;
         }
         
-        // Check if already scheduled
-        $next_scheduled = wp_next_scheduled('yoco_supplier_sync_cron');
-        if (!$next_scheduled) {
-            // Schedule to run every minute to check for sync times
-            $scheduled = wp_schedule_event(time(), 'yoco_minutely', 'yoco_supplier_sync_cron');
-            error_log("YOCO CRON: Scheduling minutely event - result: " . ($scheduled === false ? 'FAILED' : 'SUCCESS'));
-            
-            // Double check it was scheduled
-            $verify = wp_next_scheduled('yoco_supplier_sync_cron');
-            error_log("YOCO CRON: Verification - next scheduled: " . ($verify ? wp_date('H:i:s', $verify) : 'NONE'));
-        } else {
-            error_log("YOCO CRON: Already scheduled for: " . wp_date('H:i:s', $next_scheduled));
+        // This forces WooCommerce to check for due actions
+        if (class_exists('ActionScheduler_QueueRunner')) {
+            ActionScheduler_QueueRunner::instance()->run();
         }
     }
     
-    /**
-     * Handle cron enable/disable toggle
-     */
-    public static function handle_cron_toggle() {
-        if (get_option('yoco_cron_enabled') === 'yes') {
-            self::schedule_events();
-        } else {
-            self::unschedule_events();
-        }
-    }
-    
-    /**
-     * Unschedule cron events
-     */
-    public static function unschedule_events() {
-        wp_clear_scheduled_hook('yoco_supplier_sync_cron');
-    }
-    
-    /**
-     * Main cron job - runs every minute
-     */
-    public static function sync_suppliers_cron() {
-        // ALWAYS LOG THAT FUNCTION IS CALLED
-        error_log("YOCO CRON: Function called at " . current_time('H:i:s'));
-        
-        // Only run if cron is enabled
-        if (get_option('yoco_cron_enabled') !== 'yes') {
-            error_log("YOCO CRON: Exiting - cron not enabled");
+    public static function maybe_schedule_actions() {
+        if (!function_exists('as_has_scheduled_action')) {
             return;
         }
         
-        // Check if we're in test mode
+        // Prevent duplicate scheduling in same request
+        static $already_scheduled = false;
+        if ($already_scheduled) {
+            return;
+        }
+        $already_scheduled = true;
+        
+        $cron_enabled = get_option('yoco_cron_enabled', 'no') === 'yes';
         $test_mode = get_option('yoco_cron_test_mode', 'no') === 'yes';
         
-        // USE WORDPRESS TIMEZONE FOR CONSISTENCY
-        $wp_timezone = wp_timezone();
-        $current_datetime = new DateTime('now', $wp_timezone);
-        $current_time = $current_datetime->format('H:i');
-        $current_day = $current_datetime->format('w'); // 0=Sunday, 6=Saturday
-        
-        if ($test_mode) {
-            // TEST MODE: Check if enough time has passed since last sync
-            $test_interval = get_option('yoco_cron_test_interval', 5); // minutes
-            $last_test_sync = get_option('yoco_last_test_sync', 0);
-            $current_timestamp = $current_datetime->getTimestamp();
-            
-            $time_since_last = $current_timestamp - $last_test_sync;
-            $required_interval = $test_interval * 60;
-            
-            error_log("YOCO CRON TEST MODE: Check timing - Last: " . ($last_test_sync > 0 ? wp_date('H:i:s', $last_test_sync) : 'NEVER') . 
-                     ", Current: " . $current_datetime->format('H:i:s') . 
-                     ", Since last: " . $time_since_last . "s, Required: " . $required_interval . "s");
-            
-            if ($time_since_last < $required_interval) {
-                error_log("YOCO CRON TEST MODE: Not time yet - need " . ($required_interval - $time_since_last) . " more seconds");
-                return; // Not time for test sync yet
-            }
-            
-            // Update last test sync time
-            update_option('yoco_last_test_sync', $current_timestamp);
-            
-            error_log("YOCO CRON TEST MODE: Running sync every {$test_interval} minutes at {$current_time} (WordPress timezone)");
-        } else {
-            // NORMAL MODE: Check scheduled times
-            error_log("YOCO CRON: Checking sync times at {$current_time} (WordPress timezone)");
+        if (!$cron_enabled) {
+            self::unschedule_all_actions();
+            return;
         }
         
-        // Get all suppliers with configured feeds
+        if ($test_mode) {
+            self::schedule_test_mode();
+        } else {
+            self::schedule_daily_syncs();
+        }
+    }
+    
+    private static function schedule_daily_syncs() {
+        // Unschedule test mode
+        as_unschedule_all_actions(self::TEST_SYNC_HOOK, array(), self::GROUP);
+        
+        $sync_times = get_option('yoco_sync_times', array('03:00'));
+        $timezone = wp_timezone();
+        $now = new DateTime('now', $timezone);
+        $today = $now->format('Y-m-d');
+        
+        // Get currently scheduled actions
+        $existing_actions = as_get_scheduled_actions(array(
+            'hook' => self::DAILY_SYNC_HOOK,
+            'group' => self::GROUP,
+            'status' => ActionScheduler_Store::STATUS_PENDING,
+            'per_page' => 100
+        ));
+        
+        // Extract times from existing actions
+        $existing_times = array();
+        foreach ($existing_actions as $action) {
+            $args = $action->get_args();
+            if (isset($args['time'])) {
+                $existing_times[] = $args['time'];
+            }
+        }
+        
+        // Remove actions for times that are no longer configured
+        foreach ($existing_actions as $action_id => $action) {
+            $args = $action->get_args();
+            $time = isset($args['time']) ? $args['time'] : null;
+            if ($time && !in_array($time, $sync_times)) {
+                as_unschedule_action($action_id);
+                error_log("YOCO CRON: Removed old sync time {$time}");
+            }
+        }
+        
+        // Schedule new times
+        foreach ($sync_times as $time) {
+            // Skip if already scheduled
+            if (in_array($time, $existing_times)) {
+                error_log("YOCO CRON: Sync at {$time} already scheduled, skipping");
+                continue;
+            }
+            
+            $sync_dt = new DateTime($today . ' ' . $time, $timezone);
+            
+            // If passed today, schedule tomorrow
+            if ($sync_dt->getTimestamp() <= $now->getTimestamp()) {
+                $sync_dt->modify('+1 day');
+            }
+            
+            as_schedule_recurring_action($sync_dt->getTimestamp(), DAY_IN_SECONDS, self::DAILY_SYNC_HOOK, array('time' => $time), self::GROUP);
+            error_log("YOCO CRON: Scheduled daily sync at {$time} (" . $sync_dt->format('Y-m-d H:i:s') . ")");
+        }
+    }
+    
+    private static function schedule_test_mode() {
+        $test_interval = get_option('yoco_cron_test_interval', 5);
+        $interval_seconds = $test_interval * 60;
+        
+        as_unschedule_all_actions(self::DAILY_SYNC_HOOK, array(), self::GROUP);
+        
+        if (as_has_scheduled_action(self::TEST_SYNC_HOOK, array(), self::GROUP)) {
+            return;
+        }
+        
+        $first_run = time() + 60;
+        as_schedule_recurring_action($first_run, $interval_seconds, self::TEST_SYNC_HOOK, array(), self::GROUP);
+        error_log("YOCO CRON: Scheduled test sync every {$test_interval} minutes");
+    }
+    
+    public static function unschedule_all_actions() {
+        if (!function_exists('as_unschedule_all_actions')) {
+            return;
+        }
+        
+        as_unschedule_all_actions(self::DAILY_SYNC_HOOK, array(), self::GROUP);
+        as_unschedule_all_actions(self::TEST_SYNC_HOOK, array(), self::GROUP);
+    }
+    
+    public static function run_daily_sync($args = array()) {
+        $time = isset($args['time']) ? $args['time'] : 'unknown';
+        error_log("YOCO CRON: Daily sync triggered at {$time}");
+        self::sync_all_active_suppliers('scheduled');
+    }
+    
+    public static function run_test_sync() {
+        error_log('YOCO CRON: Test sync triggered');
+        self::sync_all_active_suppliers('test');
+    }
+    
+    private static function sync_all_active_suppliers($mode = 'scheduled') {
+        $start_time = microtime(true);
         $suppliers = YoCo_Supplier::get_suppliers();
         $synced_suppliers = array();
         
         foreach ($suppliers as $supplier) {
-            // Skip if not active
             if (!$supplier['settings']['is_active']) {
                 continue;
             }
             
-            // Skip if no feed configuration
             $has_feed_config = false;
             if (!empty($supplier['settings']['feed_url'])) {
-                $has_feed_config = true; // URL mode
+                $has_feed_config = true;
             } elseif ($supplier['settings']['connection_type'] === 'ftp' && 
                      !empty($supplier['settings']['ftp_host']) && 
                      !empty($supplier['settings']['ftp_user']) && 
                      !empty($supplier['settings']['ftp_path'])) {
-                $has_feed_config = true; // FTP mode
+                $has_feed_config = true;
             }
             
             if (!$has_feed_config) {
                 continue;
             }
             
-            // Decide if we should sync
-            $should_sync = false;
-            
-            if ($test_mode) {
-                // TEST MODE: Sync all active suppliers with feeds
-                $should_sync = true;
-                error_log("YOCO CRON TEST MODE: Syncing supplier {$supplier['name']} (test mode active)");
-            } else {
-                // NORMAL MODE: Check if it's time to sync this supplier
-                $should_sync = self::should_sync_supplier($supplier['settings'], $current_time, $current_day);
-                if ($should_sync) {
-                    error_log("YOCO CRON: Syncing supplier {$supplier['name']} at scheduled time {$current_time}");
-                }
-            }
-            
-            if ($should_sync) {
-                try {
-                    $result = YoCo_Sync::manual_sync($supplier['term_id']);
-                    
-                    if ($result['success']) {
-                        $synced_suppliers[] = array(
-                            'name' => $supplier['name'],
-                            'processed' => $result['data']['processed'],
-                            'updated' => $result['data']['updated']
-                        );
-                        error_log("YOCO CRON: Successfully synced {$supplier['name']} - Processed: {$result['data']['processed']}, Updated: {$result['data']['updated']}");
-                    } else {
-                        error_log("YOCO CRON: Failed to sync {$supplier['name']}: {$result['message']}");
-                    }
-                } catch (Exception $e) {
-                    error_log("YOCO CRON: Exception syncing {$supplier['name']}: " . $e->getMessage());
-                }
+            try {
+                $result = YoCo_Sync::manual_sync($supplier['term_id']);
                 
-                // Add small delay between suppliers to prevent server overload
-                sleep(2);
+                if ($result['success']) {
+                    $synced_suppliers[] = array(
+                        'name' => $supplier['name'],
+                        'processed' => $result['data']['processed'],
+                        'updated' => $result['data']['updated']
+                    );
+                    error_log("YOCO CRON: Synced {$supplier['name']} - Processed: {$result['data']['processed']}, Updated: {$result['data']['updated']}");
+                } else {
+                    error_log("YOCO CRON: Failed {$supplier['name']}: {$result['message']}");
+                }
+            } catch (Exception $e) {
+                error_log("YOCO CRON: Exception {$supplier['name']}: " . $e->getMessage());
             }
+            
+            sleep(2);
         }
         
-        // Log summary if any suppliers were synced
         if (!empty($synced_suppliers)) {
             $total_processed = array_sum(array_column($synced_suppliers, 'processed'));
             $total_updated = array_sum(array_column($synced_suppliers, 'updated'));
-            $mode_text = $test_mode ? 'TEST MODE' : 'NORMAL MODE';
-            error_log("YOCO CRON {$mode_text}: Completed sync of " . count($synced_suppliers) . " suppliers. Total processed: {$total_processed}, Total updated: {$total_updated}");
+            $duration = round(microtime(true) - $start_time, 2);
             
-            // ALSO LOG TO WORDPRESS OPTIONS FOR DASHBOARD DISPLAY
+            error_log("YOCO CRON ({$mode}): Completed " . count($synced_suppliers) . " suppliers in {$duration}s");
+            
             $cron_log_entry = array(
-                'timestamp' => current_time('timestamp'),
+                'timestamp' => time(),
                 'datetime' => current_time('Y-m-d H:i:s'),
-                'mode' => $test_mode ? 'test' : 'normal',
+                'mode' => $mode,
                 'suppliers_synced' => count($synced_suppliers),
                 'total_processed' => $total_processed,
                 'total_updated' => $total_updated,
+                'duration' => $duration,
                 'suppliers' => array_column($synced_suppliers, 'name')
             );
             
-            // Keep last 20 cron runs
             $cron_history = get_option('yoco_cron_history', array());
             array_unshift($cron_history, $cron_log_entry);
             $cron_history = array_slice($cron_history, 0, 20);
             update_option('yoco_cron_history', $cron_history);
-        }
-    }
-    
-    /**
-     * Check if supplier should be synced at current time
-     */
-    private static function should_sync_supplier($settings, $current_time, $current_day) {
-        if (empty($settings['update_times']) || empty($settings['update_frequency'])) {
-            return false;
-        }
-        
-        // Parse update times
-        $update_times = is_array($settings['update_times']) ? $settings['update_times'] : json_decode($settings['update_times'], true);
-        if (!is_array($update_times)) {
-            return false;
-        }
-        
-        // Check if current time matches any of the update times
-        $time_match = false;
-        foreach ($update_times as $update_time) {
-            if ($update_time === $current_time) {
-                $time_match = true;
-                break;
-            }
-        }
-        
-        if (!$time_match) {
-            return false;
-        }
-        
-        // Check frequency (daily = 1, weekly = 7, etc.)
-        $frequency = intval($settings['update_frequency']);
-        
-        if ($frequency === 1) {
-            // Daily - sync every day at specified times
-            return true;
-        }
-        
-        if ($frequency === 7) {
-            // Weekly - only sync on Mondays (day 1)
-            return $current_day === 1;
-        }
-        
-        // For other frequencies, implement as needed
-        // For now, default to daily behavior
-        return true;
-    }
-    
-    /**
-     * Add custom cron schedule
-     */
-    public static function add_cron_schedules($schedules) {
-        $schedules['yoco_minutely'] = array(
-            'interval' => 60,
-            'display' => __('Every Minute (YoCo)', 'yoco-backorder')
-        );
-        
-        return $schedules;
-    }
-    
-    /**
-     * Get next scheduled sync for a supplier
-     */
-    public static function get_next_sync_time($supplier_settings) {
-        if (empty($supplier_settings['update_times'])) {
-            return null;
-        }
-        
-        $current_time = current_time('H:i');
-        $current_timestamp = current_time('timestamp');
-        
-        $update_times = is_array($supplier_settings['update_times']) ? 
-            $supplier_settings['update_times'] : 
-            json_decode($supplier_settings['update_times'], true);
-        
-        if (!is_array($update_times)) {
-            return null;
-        }
-        
-        // Find next sync time today
-        $today_date = current_time('Y-m-d');
-        $next_time = null;
-        
-        foreach ($update_times as $time) {
-            $sync_timestamp = strtotime($today_date . ' ' . $time);
             
-            if ($sync_timestamp > $current_timestamp) {
-                if ($next_time === null || $sync_timestamp < $next_time) {
-                    $next_time = $sync_timestamp;
-                }
+            if ($mode === 'test') {
+                update_option('yoco_last_test_sync', time());
+            } else {
+                update_option('yoco_last_daily_sync', time());
             }
         }
-        
-        // If no time found today, use first time tomorrow
-        if ($next_time === null) {
-            $tomorrow_date = date('Y-m-d', strtotime('+1 day', $current_timestamp));
-            $first_time = reset($update_times);
-            $next_time = strtotime($tomorrow_date . ' ' . $first_time);
+    }
+    
+    public static function get_next_scheduled_run() {
+        if (!function_exists('as_next_scheduled_action')) {
+            return null;
         }
         
-        return $next_time;
+        if (get_option('yoco_cron_enabled', 'no') !== 'yes') {
+            return null;
+        }
+        
+        $test_mode = get_option('yoco_cron_test_mode', 'no') === 'yes';
+        $hook = $test_mode ? self::TEST_SYNC_HOOK : self::DAILY_SYNC_HOOK;
+        $next_timestamp = as_next_scheduled_action($hook, array(), self::GROUP);
+        
+        if (!$next_timestamp) {
+            return null;
+        }
+        
+        // Convert UTC timestamp to local time for display
+        $timezone = wp_timezone();
+        $next_dt = new DateTime('@' . $next_timestamp);
+        $next_dt->setTimezone($timezone);
+        
+        if ($test_mode) {
+            return array(
+                'timestamp' => $next_timestamp,
+                'datetime' => $next_dt->format('Y-m-d H:i:s'),
+                'human' => $next_dt->format('H:i'),
+                'mode' => 'test',
+                'interval' => get_option('yoco_cron_test_interval', 5)
+            );
+        } else {
+            return array(
+                'timestamp' => $next_timestamp,
+                'datetime' => $next_dt->format('Y-m-d H:i:s'),
+                'human' => $next_dt->format('Y-m-d H:i'),
+                'mode' => 'scheduled'
+            );
+        }
+    }
+    
+    public static function get_scheduler_status() {
+        if (!function_exists('as_has_scheduled_action')) {
+            return array('available' => false, 'message' => 'Not loaded');
+        }
+        
+        $test_mode = get_option('yoco_cron_test_mode', 'no') === 'yes';
+        $hook = $test_mode ? self::TEST_SYNC_HOOK : self::DAILY_SYNC_HOOK;
+        
+        $pending = count(as_get_scheduled_actions(array(
+            'group' => self::GROUP,
+            'status' => ActionScheduler_Store::STATUS_PENDING,
+            'per_page' => 100
+        )));
+        
+        return array(
+            'available' => true,
+            'enabled' => get_option('yoco_cron_enabled', 'no') === 'yes',
+            'test_mode' => $test_mode,
+            'has_scheduled' => as_has_scheduled_action($hook, array(), self::GROUP),
+            'next_run' => as_next_scheduled_action($hook, array(), self::GROUP),
+            'pending_actions' => $pending,
+            'running_actions' => 0
+        );
+    }
+    
+    public static function trigger_manual_sync() {
+        self::sync_all_active_suppliers('manual');
     }
 }
 
-// Add custom cron schedule
-add_filter('cron_schedules', array('YoCo_Cron', 'add_cron_schedules'));
-
-// Initialize cron
 YoCo_Cron::init();
