@@ -271,7 +271,7 @@ class YoCo_Sync {
         }
         
         // Create temporary file to download to
-        $temp_file = wp_tempnam('yoco_ftp_feed');
+        $temp_file = tempnam(sys_get_temp_dir(), 'yoco_ftp_feed');
         
         // Download file from FTP
         if (!ftp_get($ftp_connection, $temp_file, $settings['ftp_path'], FTP_BINARY)) {

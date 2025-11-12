@@ -187,6 +187,59 @@ if (!class_exists('YoCo_Backorder_System')) {
 function YoCo() {
     return YoCo_Backorder_System::instance();
 }
+add_action('init', function() {
+    if (isset($_GET['yoco_cron_secret']) && $_GET['yoco_cron_secret'] === 'yoco_jokasport_2025_xK9mP2nQ7wL') {
+        if (isset($_GET['action']) && $_GET['action'] === 'sync_all') {
+            // Prevent duplicate runs
+            if (get_transient('yoco_cron_running')) {
+                echo 'Already running';
+                exit;
+            }
+            set_transient('yoco_cron_running', true, 600);
+            
+            // Disable all output buffering
+            while (ob_get_level()) ob_end_clean();
+            
+            // Send headers
+            ignore_user_abort(true);
+            set_time_limit(0);
+            
+            echo 'OK';
+            
+            // Flush everything
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request();
+            } else {
+                ob_start();
+                header('Connection: close');
+                header('Content-Length: 2');
+                ob_end_flush();
+                flush();
+            }
+            
+            // Now sync
+            $suppliers = YoCo_Supplier::get_suppliers();
+            $synced = 0;
+            foreach ($suppliers as $supplier) {
+                if (!$supplier['settings']['is_active']) continue;
+                
+                $has_feed = !empty($supplier['settings']['feed_url']) || 
+                           ($supplier['settings']['connection_type'] === 'ftp' && 
+                            !empty($supplier['settings']['ftp_host']) && 
+                            !empty($supplier['settings']['ftp_user']) && 
+                            !empty($supplier['settings']['ftp_path']));
+                
+                if (!$has_feed) continue;
+                
+                YoCo_Sync::manual_sync($supplier['term_id']);
+                $synced++;
+            }
+            
+            delete_transient('yoco_cron_running');
+            exit;
+        }
+    }
+});
 
 // Initialize the plugin
-YoCo();
+YoCo(); 
