@@ -17,7 +17,23 @@ if (isset($_POST['bulk_update_products']) && wp_verify_nonce($_POST['yoco_bulk_n
     
     if (!empty($selected_products)) {
         $meta_value = ($action === 'enable') ? 'yes' : 'no';
-        
+        // SIMPELE FIX: Vind parent products van geselecteerde variations en voeg ze toe
+$parent_ids = array();
+foreach ($selected_products as $product_id) {
+    $product = wc_get_product($product_id);
+    if ($product && $product->is_type('variation')) {
+        $parent_id = $product->get_parent_id();
+        if ($parent_id && !in_array($parent_id, $parent_ids)) {
+            $parent_ids[] = $parent_id;
+        }
+    }
+}
+
+// Voeg parents toe aan selected products
+if (!empty($parent_ids)) {
+    $selected_products = array_merge($selected_products, $parent_ids);
+    $selected_products = array_unique($selected_products);
+}
         // BULK DATABASE UPDATE - NO INDIVIDUAL SAVES, NO WOOCOMMERCE HOOKS
         global $wpdb;
         
