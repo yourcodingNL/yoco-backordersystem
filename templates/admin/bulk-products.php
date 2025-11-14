@@ -58,6 +58,13 @@ if (!empty($parent_ids)) {
                 if (!empty($original_delivery)) {
                     update_post_meta($product_id, 'rrp', $original_delivery);
                     update_post_meta($product_id, '_backorders', 'no');
+
+// Reset stock status if NO stock
+$stock_qty = get_post_meta($product_id, '_stock', true);
+if (!$stock_qty || $stock_qty <= 0) {
+    update_post_meta($product_id, '_stock_status', 'outofstock');
+    wp_set_object_terms($product_id, 'outofstock', 'product_visibility', true);
+}
                 }
             }
         }

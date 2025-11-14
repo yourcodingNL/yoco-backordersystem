@@ -698,12 +698,14 @@ class YoCo_Product {
             }
             
             if ($has_supplier_stock) {
-                // Set backorder with supplier delivery time - PURE DATABASE, NO WOOCOMMERCE HOOKS
-                update_post_meta($product_id, '_backorders', 'notify');
-                update_post_meta($product_id, '_stock_status', 'onbackorder');
-                if (!empty($supplier_delivery_time)) {
-                    update_post_meta($product_id, 'rrp', $supplier_delivery_time);
-                }
+    update_post_meta($product_id, '_backorders', 'notify');
+    update_post_meta($product_id, '_stock_status', 'onbackorder');
+    if (!empty($supplier_delivery_time)) {
+        update_post_meta($product_id, 'rrp', $supplier_delivery_time);
+    }
+    
+    // Remove outofstock visibility term so product shows in catalog
+    wp_remove_object_terms($product_id, 'outofstock', 'product_visibility');
                 
                 // Sync parent stock status if this is a variation
                 self::sync_parent_stock_status($product_id);
@@ -757,10 +759,16 @@ class YoCo_Product {
                 
                 // If any variation is on backorder, set parent to backorder too
                 if ($has_backorder) {
-                    update_post_meta($parent_id, '_stock_status', 'onbackorder');
-                    error_log("YOCO: Parent {$parent_id} set to backorder due to variation {$variation_id}");
-                    return true;
-                }
+    update_post_meta($parent_id, '_stock_status', 'onbackorder');
+    
+    // Remove outofstock visibility and clear cache
+    wp_remove_object_terms($parent_id, 'outofstock', 'product_visibility');
+    delete_transient('wc_product_children_' . $parent_id);
+    wc_delete_product_transients($parent_id);
+    
+    error_log("YOCO: Parent {$parent_id} set to backorder due to variation {$variation_id}");
+    return true;
+}
             }
         }
         
