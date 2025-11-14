@@ -239,93 +239,94 @@ class YoCo_Sync {
         );
     }
     
-    /**
-     * Get feed data from FTP
-     */
     private static function get_ftp_feed_data($settings, $delimiter) {
-        // Check cache first
-        $cache_key = 'yoco_ftp_feed_' . md5($settings['ftp_host'] . $settings['ftp_path']);
-        $cached_data = get_transient($cache_key);
-        
-        if ($cached_data !== false) {
-            return $cached_data;
-        }
-        
-        // Connect to FTP
-        $ftp_connection = ftp_connect($settings['ftp_host'], $settings['ftp_port']);
-        if (!$ftp_connection) {
-            throw new Exception(sprintf(__('Failed to connect to FTP server %s:%d', 'yoco-backorder'), 
-                $settings['ftp_host'], $settings['ftp_port']));
-        }
-        
-        // Login to FTP
-        $login = ftp_login($ftp_connection, $settings['ftp_user'], $settings['ftp_pass']);
-        if (!$login) {
-            ftp_close($ftp_connection);
-            throw new Exception(__('Failed to login to FTP server', 'yoco-backorder'));
-        }
-        
-        // Set passive mode if configured
-        if ($settings['ftp_passive']) {
-            ftp_pasv($ftp_connection, true);
-        }
-        
-        // Create temporary file to download to
-        $temp_file = tempnam(sys_get_temp_dir(), 'yoco_ftp_feed');
-        
-        // Download file from FTP
-        if (!ftp_get($ftp_connection, $temp_file, $settings['ftp_path'], FTP_BINARY)) {
-            ftp_close($ftp_connection);
-            unlink($temp_file);
-            throw new Exception(sprintf(__('Failed to download file %s from FTP server', 'yoco-backorder'), 
-                $settings['ftp_path']));
-        }
-        
-        // Close FTP connection
-        ftp_close($ftp_connection);
-        
-        // Read and parse CSV file
-        $csv_content = file_get_contents($temp_file);
-        unlink($temp_file); // Clean up temp file
-        
-        if ($csv_content === false) {
-            throw new Exception(__('Failed to read downloaded CSV file', 'yoco-backorder'));
-        }
-        
-        // Parse CSV
-        $lines = str_getcsv($csv_content, "\n");
-        $feed_data = array();
-        $header_row = null;
-        
-        foreach ($lines as $line) {
-            if (empty(trim($line))) continue;
-            
-            $row = str_getcsv($line, $delimiter);
-            
-            if ($header_row === null && $settings['csv_has_header']) {
-                $header_row = $row;
-                continue;
-            }
-            
-            if ($header_row === null) {
-                // No header, use numeric indexes
-                $feed_data[] = $row;
-            } else {
-                // Create associative array with headers
-                $assoc_row = array();
-                for ($i = 0; $i < count($row); $i++) {
-                    $key = isset($header_row[$i]) ? $header_row[$i] : "col_$i";
-                    $assoc_row[$key] = isset($row[$i]) ? $row[$i] : '';
-                }
-                $feed_data[] = $assoc_row;
-            }
-        }
-        
-        // Cache for 10 minutes
-        set_transient($cache_key, $feed_data, 600);
-        
-        return $feed_data;
+    // Check cache first
+    $cache_key = 'yoco_ftp_feed_' . md5($settings['ftp_host'] . $settings['ftp_path']);
+    $cached_data = get_transient($cache_key);
+    
+    if ($cached_data !== false) {
+        return $cached_data;
     }
+    
+    // Connect to FTP
+    $ftp_connection = ftp_connect($settings['ftp_host'], $settings['ftp_port']);
+    if (!$ftp_connection) {
+        throw new Exception(sprintf(__('Failed to connect to FTP server %s:%d', 'yoco-backorder'), 
+            $settings['ftp_host'], $settings['ftp_port']));
+    }
+    
+    // Login to FTP
+    $login = ftp_login($ftp_connection, $settings['ftp_user'], $settings['ftp_pass']);
+    if (!$login) {
+        ftp_close($ftp_connection);
+        throw new Exception(__('Failed to login to FTP server', 'yoco-backorder'));
+    }
+    
+    // Set passive mode if configured
+    if ($settings['ftp_passive']) {
+        ftp_pasv($ftp_connection, true);
+    }
+    
+    // Create temporary file to download to
+    $temp_file = tempnam(sys_get_temp_dir(), 'yoco_ftp_feed');
+    
+    // Download file from FTP
+    if (!ftp_get($ftp_connection, $temp_file, $settings['ftp_path'], FTP_BINARY)) {
+        ftp_close($ftp_connection);
+        unlink($temp_file);
+        throw new Exception(sprintf(__('Failed to download file %s from FTP server', 'yoco-backorder'), 
+            $settings['ftp_path']));
+    }
+    
+    // Close FTP connection
+    ftp_close($ftp_connection);
+    
+    // Read and parse CSV file
+    $csv_content = file_get_contents($temp_file);
+    unlink($temp_file);
+    
+    if ($csv_content === false) {
+        throw new Exception(__('Failed to read downloaded CSV file', 'yoco-backorder'));
+    }
+    
+    // Normalize line endings
+    $csv_content = str_replace(["\r\n", "\r"], "\n", $csv_content);
+    
+    // Parse CSV
+    $lines = explode("\n", $csv_content);
+    $data = array('header' => array(), 'rows' => array());
+    $header_row = null;
+    
+    foreach ($lines as $line) {
+        if (empty(trim($line))) continue;
+        
+        $row = str_getcsv($line, $delimiter);
+        
+        if ($header_row === null && $settings['csv_has_header']) {
+            $header_row = $row;
+            $data['header'] = $row;
+            continue;
+        }
+        
+        if ($header_row === null) {
+            // No header, use numeric indexes
+            $data['rows'][] = $row;
+        } else {
+            // Create associative array with headers
+            $assoc_row = array();
+            for ($i = 0; $i < count($row); $i++) {
+                $key = isset($header_row[$i]) ? $header_row[$i] : "col_$i";
+                $assoc_row[$key] = isset($row[$i]) ? $row[$i] : '';
+            }
+            $data['rows'][] = $assoc_row;
+        }
+    }
+    
+    // Cache for 10 minutes
+    set_transient($cache_key, $data, 600);
+    
+    return $data;
+}
     
     /**
      * Get feed data with caching
