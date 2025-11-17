@@ -121,6 +121,7 @@ class YoCo_Supplier {
             'default_delivery_time' => sanitize_text_field($settings['default_delivery_time']),
             'csv_delimiter' => sanitize_text_field($settings['csv_delimiter']),
             'csv_has_header' => intval($settings['csv_has_header']),
+            'match_on' => sanitize_text_field($settings['match_on'] ?? 'sku'),
             'sku_column' => sanitize_text_field($settings['sku_column']),
             'stock_column' => sanitize_text_field($settings['stock_column']),
             'mapping_config' => json_encode($settings['mapping_config']),
@@ -356,6 +357,7 @@ class YoCo_Supplier {
             'default_delivery_time' => '3 tot 5 werkdagen',
             'csv_delimiter' => ',',
             'csv_has_header' => 1,
+            'match_on' => 'sku',
             'sku_column' => '',
             'stock_column' => '',
             'mapping_config' => array(),
@@ -368,7 +370,7 @@ class YoCo_Supplier {
      */
     public static function get_supplier_products($term_id) {
         $args = array(
-            'post_type' => array('product', 'product_variation'), // RESTORE: Both types needed
+            'post_type' => array('product', 'product_variation'),
             'posts_per_page' => -1,
             'post_status' => 'publish',
             'meta_query' => array(

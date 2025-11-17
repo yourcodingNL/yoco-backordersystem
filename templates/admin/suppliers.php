@@ -23,6 +23,7 @@ if (isset($_POST['save_supplier']) && wp_verify_nonce($_POST['yoco_nonce'], 'yoc
         'default_delivery_time' => sanitize_text_field($_POST['default_delivery_time']),
         'csv_delimiter' => sanitize_text_field($_POST['csv_delimiter']),
         'csv_has_header' => isset($_POST['csv_has_header']) ? 1 : 0,
+        'match_on' => sanitize_text_field($_POST['match_on'] ?? 'sku'),
         'sku_column' => sanitize_text_field($_POST['sku_column']),
         'stock_column' => sanitize_text_field($_POST['stock_column']),
         'mapping_config' => array(),
@@ -48,7 +49,8 @@ if (isset($_POST['emergency_db_fix']) && wp_verify_nonce($_POST['yoco_emergency_
         'ftp_user' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_user varchar(255) DEFAULT '' AFTER ftp_port",
         'ftp_pass' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_pass varchar(255) DEFAULT '' AFTER ftp_user",
         'ftp_path' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_path varchar(255) DEFAULT '' AFTER ftp_pass",
-        'ftp_passive' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_passive tinyint(1) DEFAULT 1 AFTER ftp_path"
+        'ftp_passive' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_passive tinyint(1) DEFAULT 1 AFTER ftp_path",
+        'match_on' => "ALTER TABLE {$supplier_table} ADD COLUMN match_on varchar(10) DEFAULT 'sku' AFTER csv_has_header"
     );
     
     $added = array();
@@ -67,7 +69,7 @@ if (isset($_POST['emergency_db_fix']) && wp_verify_nonce($_POST['yoco_emergency_
     }
     
     if (empty($errors)) {
-        echo '<div class="notice notice-success"><p><strong>✅ DATABASE FIXED!</strong> Added FTP columns: ' . implode(', ', $added) . '. You can now save supplier settings!</p></div>';
+        echo '<div class="notice notice-success"><p><strong>✅ DATABASE FIXED!</strong> Added columns: ' . implode(', ', $added) . '</p></div>';
     } else {
         echo '<div class="notice notice-error"><p><strong>❌ Database fix failed:</strong><br>' . implode('<br>', $errors) . '</p></div>';
     }
@@ -103,7 +105,7 @@ if ($current_supplier_id) {
     if (empty($connection_type_exists)) {
         echo '<div style="background: #dc3545; color: white; padding: 15px; border-radius: 5px; margin: 20px 0;">';
         echo '<strong>🚨 DATABASE ERROR DETECTED!</strong><br>';
-        echo 'FTP columns are missing from database. Click button below to fix:';
+        echo 'Required columns are missing from database. Click button below to fix:';
         echo '<form method="post" style="margin: 10px 0;">';
         wp_nonce_field('yoco_emergency_fix', 'yoco_emergency_nonce');
         echo '<input type="submit" name="emergency_db_fix" class="button button-primary" value="🔧 FIX DATABASE NOW" style="background: #28a745; border-color: #28a745; margin-top: 10px;">';
@@ -264,8 +266,18 @@ if ($current_supplier_id) {
                                         <p><em><?php _e('Test the feed first to see available columns', 'yoco-backorder'); ?></em></p>
                                         
                                         <div style="margin: 10px 0;">
-                                            <label for="sku_column"><?php _e('SKU Column:', 'yoco-backorder'); ?></label>
+                                            <label for="match_on"><?php _e('Match products on:', 'yoco-backorder'); ?></label>
+                                            <select id="match_on" name="match_on">
+                                                <option value="sku" <?php selected($current_supplier['settings']['match_on'] ?? 'sku', 'sku'); ?>><?php _e('SKU', 'yoco-backorder'); ?></option>
+                                                <option value="ean" <?php selected($current_supplier['settings']['match_on'] ?? 'sku', 'ean'); ?>><?php _e('EAN (ean_13 meta field)', 'yoco-backorder'); ?></option>
+                                            </select>
+                                            <p class="description"><?php _e('Choose whether to match supplier feed with WooCommerce products by SKU or EAN', 'yoco-backorder'); ?></p>
+                                        </div>
+                                        
+                                        <div style="margin: 10px 0;">
+                                            <label for="sku_column"><?php _e('SKU/EAN Column in Feed:', 'yoco-backorder'); ?></label>
                                             <input type="text" id="sku_column" name="sku_column" value="<?php echo esc_attr($current_supplier['settings']['sku_column']); ?>" class="regular-text">
+                                            <p class="description"><?php _e('Column name in CSV that contains the SKU or EAN', 'yoco-backorder'); ?></p>
                                         </div>
                                         
                                         <div style="margin: 10px 0;">
@@ -380,8 +392,6 @@ jQuery(document).ready(function($) {
             ftp_passive: $('#ftp_passive').is(':checked') ? 1 : 0
         };
         
-        console.log('FTP Test Data:', data);
-        
         if (!data.ftp_host || !data.ftp_user || !data.ftp_path) {
             alert('<?php esc_js(_e("Please fill in FTP host, username and file path", "yoco-backorder")); ?>');
             return;
@@ -399,9 +409,6 @@ jQuery(document).ready(function($) {
                 nonce: yoco_admin.nonce
             },
             success: function(response) {
-                console.log('FTP Test Response:', response);
-                alert('FTP Test: ' + (response.success ? 'SUCCESS!' : 'FAILED: ' + response.message));
-                
                 if (response.success) {
                     var html = '<div style="background: #d4edda; border: 1px solid #c3e6cb; padding: 10px; border-radius: 3px;">';
                     html += '<strong><?php esc_js(_e("FTP Test Successful", "yoco-backorder")); ?></strong><br>';
@@ -417,16 +424,11 @@ jQuery(document).ready(function($) {
                             html += '<?php esc_js(_e("Available columns:", "yoco-backorder")); ?> ' + response.data.columns.join(', ');
                             updateColumnSelects(response.data.columns);
                         }
-                    } else {
-                        html += '<?php esc_js(_e("Connection successful, but no data returned", "yoco-backorder")); ?>';
                     }
                     
                     html += '</div>';
                     $('#feed-test-result').html(html);
-                    
-                    updateColumnSelects(response.data.columns);
                 } else {
-                    // SHOW THE ACTUAL ERROR MESSAGE!
                     var html = '<div style="background: #f8d7da; border: 1px solid #f5c6cb; padding: 10px; border-radius: 3px;">';
                     html += '<strong><?php esc_js(_e("FTP Test Failed", "yoco-backorder")); ?></strong><br>';
                     html += response.message || 'Unknown error';
@@ -435,12 +437,8 @@ jQuery(document).ready(function($) {
                 }
             },
             error: function(xhr, status, error) {
-                console.log('FTP AJAX Error:', xhr, status, error);
-                console.log('Response Text:', xhr.responseText);
                 var html = '<div style="background: #f8d7da; border: 1px solid #f5c6cb; padding: 10px; border-radius: 3px;">';
-                html += '<?php esc_js(_e("AJAX Error:", "yoco-backorder")); ?> ' + error + '<br>';
-                html += 'Status: ' + status + '<br>';
-                html += 'Response: ' + xhr.responseText.substring(0, 200);
+                html += '<?php esc_js(_e("AJAX Error:", "yoco-backorder")); ?> ' + error;
                 html += '</div>';
                 $('#feed-test-result').html(html);
             },
@@ -450,7 +448,7 @@ jQuery(document).ready(function($) {
         });
     });
     
-    // Test feed functionality (existing code)
+    // Test feed functionality
     $('#test-feed').on('click', function() {
         var button = $(this);
         var feedUrl = $('#feed_url').val();
@@ -481,10 +479,7 @@ jQuery(document).ready(function($) {
                     html += '</div>';
                     $('#feed-test-result').html(html);
                     
-                    // Update column dropdowns
-                    var columns = response.data.columns;
-                    updateColumnSelects(columns);
-                    
+                    updateColumnSelects(response.data.columns);
                 } else {
                     var html = '<div style="background: #f8d7da; border: 1px solid #f5c6cb; padding: 10px; border-radius: 3px;">';
                     html += '<strong><?php esc_js(_e("Feed Test Failed", "yoco-backorder")); ?></strong><br>';
