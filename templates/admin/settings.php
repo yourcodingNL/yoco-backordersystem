@@ -32,6 +32,7 @@ if (isset($_POST['repair_database']) && wp_verify_nonce($_POST['yoco_repair_nonc
             default_delivery_time varchar(255) DEFAULT '',
             csv_delimiter varchar(10) DEFAULT ',',
             csv_has_header tinyint(1) DEFAULT 1,
+            match_on varchar(10) DEFAULT 'sku',
             sku_column varchar(50) DEFAULT '',
             stock_column varchar(50) DEFAULT '',
             mapping_config text DEFAULT NULL,
@@ -85,8 +86,38 @@ if (isset($_POST['repair_database']) && wp_verify_nonce($_POST['yoco_repair_nonc
         }
     }
     
+    // ADD MISSING COLUMNS TO EXISTING TABLE
+    $supplier_table = $wpdb->prefix . 'yoco_supplier_settings';
+    $columns = $wpdb->get_results("SHOW COLUMNS FROM {$supplier_table}");
+    $column_names = array_column($columns, 'Field');
+    
+    $required_columns = array(
+        'connection_type' => "ALTER TABLE {$supplier_table} ADD COLUMN connection_type varchar(10) DEFAULT 'url' AFTER supplier_term_id",
+        'ftp_host' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_host varchar(255) DEFAULT '' AFTER feed_url",
+        'ftp_port' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_port int(5) DEFAULT 21 AFTER ftp_host",
+        'ftp_user' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_user varchar(255) DEFAULT '' AFTER ftp_port",
+        'ftp_pass' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_pass varchar(255) DEFAULT '' AFTER ftp_user",
+        'ftp_path' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_path varchar(255) DEFAULT '' AFTER ftp_pass",
+        'ftp_passive' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_passive tinyint(1) DEFAULT 1 AFTER ftp_path",
+        'match_on' => "ALTER TABLE {$supplier_table} ADD COLUMN match_on varchar(10) DEFAULT 'sku' AFTER csv_has_header"
+    );
+    
+    $added_columns = array();
+    foreach ($required_columns as $column_name => $sql) {
+        if (!in_array($column_name, $column_names)) {
+            $result = $wpdb->query($sql);
+            if ($result !== false) {
+                $added_columns[] = $column_name;
+            }
+        }
+    }
+    
     if ($success == 3 && empty($errors)) {
-        echo '<div class="notice notice-success"><p><strong>✅ Database repair successful! All tables created.</strong></p></div>';
+        $message = '✅ Database repair successful! All tables created.';
+        if (!empty($added_columns)) {
+            $message .= ' Added columns: ' . implode(', ', $added_columns);
+        }
+        echo '<div class="notice notice-success"><p><strong>' . $message . '</strong></p></div>';
     } else {
         echo '<div class="notice notice-error"><p><strong>❌ Database repair failed!</strong><br>';
         foreach ($errors as $error) {
@@ -145,10 +176,25 @@ $cron_enabled = get_option('yoco_cron_enabled', 'no');
 $debug_mode = get_option('yoco_debug_mode', 'no');
 $auto_sync_on_save = get_option('yoco_auto_sync_on_save', 'no');
 $sync_times = get_option('yoco_sync_times', array('03:00'));
+
+// CHECK DATABASE HEALTH
+$needs_upgrade = YoCo_Install::needs_database_upgrade();
+$missing_columns = YoCo_Install::get_missing_columns();
 ?>
 
 <div class="wrap">
     <h1><?php _e('YoCo Backorder Settings', 'yoco-backorder'); ?></h1>
+    
+    <?php if ($needs_upgrade): ?>
+    <!-- DATABASE WARNING -->
+    <div class="notice notice-error" style="border-left: 4px solid #dc3545;">
+        <p>
+            <strong>⚠️ <?php _e('Database Needs Upgrade', 'yoco-backorder'); ?></strong><br>
+            <?php _e('Missing columns:', 'yoco-backorder'); ?> <code><?php echo implode(', ', $missing_columns); ?></code><br>
+            <?php _e('Click "Repair Database Tables" below to fix.', 'yoco-backorder'); ?>
+        </p>
+    </div>
+    <?php endif; ?>
     
     <!-- Database Actions - OUTSIDE main form -->
     <div class="card" style="margin-top: 20px;">
@@ -160,7 +206,7 @@ $sync_times = get_option('yoco_sync_times', array('03:00'));
             <button type="submit" name="repair_database" class="button button-secondary">
                 <?php _e('Repair Database Tables', 'yoco-backorder'); ?>
             </button>
-            <p class="description"><?php _e('Recreates missing database tables if needed.', 'yoco-backorder'); ?></p>
+            <p class="description"><?php _e('Recreates missing database tables and adds missing columns.', 'yoco-backorder'); ?></p>
         </form>
     </div>
     

@@ -7,6 +7,10 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+// CHECK DATABASE HEALTH
+$needs_upgrade = YoCo_Install::needs_database_upgrade();
+$missing_columns = YoCo_Install::get_missing_columns();
+
 // Get stats - with safety checks
 $suppliers = array();
 $recent_logs = array();
@@ -45,6 +49,19 @@ $products_with_stock = $wpdb->get_var("SELECT COUNT(DISTINCT product_id) FROM {$
 
 <div class="wrap">
     <h1><?php _e('YoCo Backorder Dashboard', 'yoco-backorder'); ?></h1>
+    
+    <?php if ($needs_upgrade): ?>
+    <!-- DATABASE WARNING -->
+    <div class="notice notice-error" style="border-left: 4px solid #dc3545;">
+        <p>
+            <strong>⚠️ <?php _e('Database Needs Upgrade', 'yoco-backorder'); ?></strong><br>
+            <?php _e('Missing columns:', 'yoco-backorder'); ?> <code><?php echo implode(', ', $missing_columns); ?></code><br>
+            <a href="<?php echo admin_url('admin.php?page=yoco-settings'); ?>" class="button button-primary" style="margin-top: 10px;">
+                <?php _e('Go to Settings → Repair Database', 'yoco-backorder'); ?>
+            </a>
+        </p>
+    </div>
+    <?php endif; ?>
     
     <div class="yoco-dashboard-stats" style="display: flex; gap: 20px; margin: 20px 0;">
         

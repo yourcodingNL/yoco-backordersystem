@@ -75,6 +75,7 @@ class YoCo_Install {
             default_delivery_time varchar(255) DEFAULT '',
             csv_delimiter varchar(10) DEFAULT ',',
             csv_has_header tinyint(1) DEFAULT 1,
+            match_on varchar(10) DEFAULT 'sku',
             sku_column varchar(50) DEFAULT '',
             stock_column varchar(50) DEFAULT '',
             mapping_config text DEFAULT NULL,
@@ -123,24 +124,25 @@ class YoCo_Install {
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         dbDelta($tables);
         
-        // Add FTP columns to existing installations
+        // Add FTP columns and match_on to existing installations
         $supplier_table = $wpdb->prefix . 'yoco_supplier_settings';
         
-        // Check if FTP columns exist, if not add them
+        // Check if columns exist, if not add them
         $columns = $wpdb->get_results("SHOW COLUMNS FROM {$supplier_table}");
         $column_names = array_column($columns, 'Field');
         
-        $ftp_columns = array(
+        $required_columns = array(
             'connection_type' => "ALTER TABLE {$supplier_table} ADD COLUMN connection_type varchar(10) DEFAULT 'url' AFTER supplier_term_id",
             'ftp_host' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_host varchar(255) DEFAULT '' AFTER feed_url",
             'ftp_port' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_port int(5) DEFAULT 21 AFTER ftp_host",
             'ftp_user' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_user varchar(255) DEFAULT '' AFTER ftp_port",
             'ftp_pass' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_pass varchar(255) DEFAULT '' AFTER ftp_user",
             'ftp_path' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_path varchar(255) DEFAULT '' AFTER ftp_pass",
-            'ftp_passive' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_passive tinyint(1) DEFAULT 1 AFTER ftp_path"
+            'ftp_passive' => "ALTER TABLE {$supplier_table} ADD COLUMN ftp_passive tinyint(1) DEFAULT 1 AFTER ftp_path",
+            'match_on' => "ALTER TABLE {$supplier_table} ADD COLUMN match_on varchar(10) DEFAULT 'sku' AFTER csv_has_header"
         );
         
-        foreach ($ftp_columns as $column_name => $sql) {
+        foreach ($required_columns as $column_name => $sql) {
             if (!in_array($column_name, $column_names)) {
                 $wpdb->query($sql);
             }
@@ -154,6 +156,64 @@ class YoCo_Install {
         if (!in_array('sync_statistics', $log_column_names)) {
             $wpdb->query("ALTER TABLE {$log_table} ADD COLUMN sync_statistics text DEFAULT NULL AFTER error_messages");
         }
+    }
+    
+    /**
+     * Check if database needs upgrade
+     */
+    public static function needs_database_upgrade() {
+        global $wpdb;
+        
+        $supplier_table = $wpdb->prefix . 'yoco_supplier_settings';
+        
+        // Check if table exists
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$supplier_table}'");
+        if (!$table_exists) {
+            return true;
+        }
+        
+        // Check for required columns
+        $columns = $wpdb->get_results("SHOW COLUMNS FROM {$supplier_table}");
+        $column_names = array_column($columns, 'Field');
+        
+        $required_columns = array('connection_type', 'ftp_host', 'ftp_port', 'ftp_user', 'ftp_pass', 'ftp_path', 'ftp_passive', 'match_on');
+        
+        foreach ($required_columns as $column) {
+            if (!in_array($column, $column_names)) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Get missing columns
+     */
+    public static function get_missing_columns() {
+        global $wpdb;
+        
+        $supplier_table = $wpdb->prefix . 'yoco_supplier_settings';
+        
+        // Check if table exists
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$supplier_table}'");
+        if (!$table_exists) {
+            return array('Table does not exist');
+        }
+        
+        $columns = $wpdb->get_results("SHOW COLUMNS FROM {$supplier_table}");
+        $column_names = array_column($columns, 'Field');
+        
+        $required_columns = array('connection_type', 'ftp_host', 'ftp_port', 'ftp_user', 'ftp_pass', 'ftp_path', 'ftp_passive', 'match_on');
+        $missing = array();
+        
+        foreach ($required_columns as $column) {
+            if (!in_array($column, $column_names)) {
+                $missing[] = $column;
+            }
+        }
+        
+        return $missing;
     }
     
     /**
