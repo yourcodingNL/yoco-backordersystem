@@ -7,16 +7,9 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-/**
- * YoCo_Sync Class
- */
 class YoCo_Sync {
     
-    /**
-     * Manual sync supplier
-     */
     public static function manual_sync($supplier_term_id) {
-        // Create sync log
         $log_id = self::create_sync_log($supplier_term_id, 'manual');
         
         try {
@@ -26,15 +19,14 @@ class YoCo_Sync {
                 throw new Exception(__('Supplier settings not found', 'yoco-backorder'));
             }
             
-            // CHECK FOR BOTH URL AND FTP CONFIGURATION
             $has_feed_config = false;
             if (!empty($supplier_settings['feed_url'])) {
-                $has_feed_config = true; // URL mode
+                $has_feed_config = true;
             } elseif ($supplier_settings['connection_type'] === 'ftp' && 
                      !empty($supplier_settings['ftp_host']) && 
                      !empty($supplier_settings['ftp_user']) && 
                      !empty($supplier_settings['ftp_path'])) {
-                $has_feed_config = true; // FTP mode
+                $has_feed_config = true;
             }
             
             if (!$has_feed_config) {
@@ -45,10 +37,7 @@ class YoCo_Sync {
                 throw new Exception(__('Supplier is not active', 'yoco-backorder'));
             }
             
-            // Download and process feed
             $result = self::process_supplier_feed($supplier_term_id, $supplier_settings);
-            
-            // Update sync log
             self::complete_sync_log($log_id, 'completed', $result);
             
             return array(
@@ -68,9 +57,6 @@ class YoCo_Sync {
         }
     }
     
-    /**
-     * Sync single product
-     */
     public static function sync_single_product($product_id, $supplier_term_id) {
         try {
             $supplier_settings = YoCo_Supplier::get_supplier_settings($supplier_term_id);
@@ -84,7 +70,6 @@ class YoCo_Sync {
                 throw new Exception(__('Product not found', 'yoco-backorder'));
             }
             
-            // Get product SKU or EAN
             $sku = $product->get_sku();
             $ean = get_post_meta($product_id, 'ean_13', true);
             
@@ -92,17 +77,13 @@ class YoCo_Sync {
                 throw new Exception(__('Product has no SKU or EAN for matching', 'yoco-backorder'));
             }
             
-            // Download feed - support both URL and FTP  
             if ($supplier_settings['connection_type'] === 'ftp') {
                 $feed_data = self::get_ftp_feed_data($supplier_settings, $supplier_settings['csv_delimiter']);
             } else {
                 $feed_data = self::get_feed_data($supplier_settings['feed_url'], $supplier_settings['csv_delimiter']);
             }
             
-            // Find product in feed
             $stock_info = self::find_product_in_feed($feed_data, $sku, $ean, $supplier_settings);
-            
-            // Update supplier stock
             self::update_supplier_stock($product_id, $supplier_term_id, $stock_info, $sku, $ean);
             
             return array(
@@ -119,22 +100,17 @@ class YoCo_Sync {
         }
     }
     
-    /**
-     * Process supplier feed
-     */
     private static function process_supplier_feed($supplier_term_id, $settings) {
         $processed = 0;
         $updated = 0;
         $errors = array();
         
-        // Get supplier products (both simple and variable)
         $products = YoCo_Supplier::get_supplier_products($supplier_term_id);
         
         if (empty($products)) {
             throw new Exception(__('No products found for this supplier with YoCo backorder enabled', 'yoco-backorder'));
         }
         
-        // Download feed - support both URL and FTP
         if ($settings['connection_type'] === 'ftp') {
             $feed_data = self::get_ftp_feed_data($settings, $settings['csv_delimiter']);
         } else {
@@ -143,22 +119,18 @@ class YoCo_Sync {
         
         $products_to_sync = array();
         
-        // Collect all products/variations that need syncing
         foreach ($products as $post) {
             $product = wc_get_product($post->ID);
             if (!$product) continue;
             
             if ($product->is_type('variable')) {
-                // Variable product parent - check if parent has YoCo enabled
                 $parent_yoco_enabled = get_post_meta($post->ID, '_yoco_backorder_enabled', true);
                 
                 if ($parent_yoco_enabled === 'yes') {
-                    // Parent has YoCo enabled - sync ALL variations
                     $variations = $product->get_children();
                     foreach ($variations as $variation_id) {
                         $variation = wc_get_product($variation_id);
                         if ($variation) {
-                            // Ensure variation has YoCo enabled (sync with parent)
                             update_post_meta($variation_id, '_yoco_backorder_enabled', 'yes');
                             
                             $products_to_sync[] = array(
@@ -171,12 +143,10 @@ class YoCo_Sync {
                     }
                 }
             } elseif ($product->is_type('variation')) {
-                // Individual variation found (shouldn't happen with new logic, but handle it)
                 $parent_id = $product->get_parent_id();
                 $parent_yoco_enabled = get_post_meta($parent_id, '_yoco_backorder_enabled', true);
                 
                 if ($parent_yoco_enabled === 'yes') {
-                    // Sync with parent setting
                     update_post_meta($post->ID, '_yoco_backorder_enabled', 'yes');
                     
                     $products_to_sync[] = array(
@@ -187,7 +157,6 @@ class YoCo_Sync {
                     );
                 }
             } else {
-                // Simple product - use individual YoCo setting
                 $yoco_enabled = get_post_meta($post->ID, '_yoco_backorder_enabled', true);
                 if ($yoco_enabled === 'yes') {
                     $products_to_sync[] = array(
@@ -200,7 +169,6 @@ class YoCo_Sync {
             }
         }
         
-        // Process each product/variation
         foreach ($products_to_sync as $item) {
             try {
                 $processed++;
@@ -215,14 +183,10 @@ class YoCo_Sync {
                     continue;
                 }
                 
-                // Find in feed
                 $stock_info = self::find_product_in_feed($feed_data, $sku, $ean, $settings);
                 
-                // Update stock
                 if (self::update_supplier_stock($product_id, $supplier_term_id, $stock_info, $sku, $ean)) {
                     $updated++;
-                    
-                    // Update product backorder status
                     YoCo_Product::update_product_backorder_status($product_id);
                 }
                 
@@ -238,11 +202,7 @@ class YoCo_Sync {
         );
     }
     
-    /**
-     * Get FTP feed data
-     */
     private static function get_ftp_feed_data($settings, $delimiter) {
-        // Check cache first - INCLUDE USERNAME to prevent cache collision between different FTP users on same host
         $cache_key = 'yoco_ftp_feed_' . md5($settings['ftp_host'] . $settings['ftp_user'] . $settings['ftp_path']);
         $cached_data = get_transient($cache_key);
         
@@ -250,29 +210,24 @@ class YoCo_Sync {
             return $cached_data;
         }
         
-        // Connect to FTP
         $ftp_connection = ftp_connect($settings['ftp_host'], $settings['ftp_port']);
         if (!$ftp_connection) {
             throw new Exception(sprintf(__('Failed to connect to FTP server %s:%d', 'yoco-backorder'), 
                 $settings['ftp_host'], $settings['ftp_port']));
         }
         
-        // Login to FTP
         $login = ftp_login($ftp_connection, $settings['ftp_user'], $settings['ftp_pass']);
         if (!$login) {
             ftp_close($ftp_connection);
             throw new Exception(__('Failed to login to FTP server', 'yoco-backorder'));
         }
         
-        // Set passive mode if configured
         if ($settings['ftp_passive']) {
             ftp_pasv($ftp_connection, true);
         }
         
-        // Create temporary file to download to
         $temp_file = tempnam(sys_get_temp_dir(), 'yoco_ftp_feed');
         
-        // Download file from FTP
         if (!ftp_get($ftp_connection, $temp_file, $settings['ftp_path'], FTP_BINARY)) {
             ftp_close($ftp_connection);
             unlink($temp_file);
@@ -280,10 +235,8 @@ class YoCo_Sync {
                 $settings['ftp_path']));
         }
         
-        // Close FTP connection
         ftp_close($ftp_connection);
         
-        // Read and parse CSV file
         $csv_content = file_get_contents($temp_file);
         unlink($temp_file);
         
@@ -291,10 +244,7 @@ class YoCo_Sync {
             throw new Exception(__('Failed to read downloaded CSV file', 'yoco-backorder'));
         }
         
-        // Normalize line endings
         $csv_content = str_replace(["\r\n", "\r"], "\n", $csv_content);
-        
-        // Parse CSV
         $lines = explode("\n", $csv_content);
         $data = array('header' => array(), 'rows' => array());
         $header_row = null;
@@ -311,10 +261,8 @@ class YoCo_Sync {
             }
             
             if ($header_row === null) {
-                // No header, use numeric indexes
                 $data['rows'][] = $row;
             } else {
-                // Create associative array with headers
                 $assoc_row = array();
                 for ($i = 0; $i < count($row); $i++) {
                     $key = isset($header_row[$i]) ? $header_row[$i] : "col_$i";
@@ -324,17 +272,11 @@ class YoCo_Sync {
             }
         }
         
-        // Cache for 10 minutes
         set_transient($cache_key, $data, 600);
-        
         return $data;
     }
     
-    /**
-     * Get feed data with caching
-     */
     private static function get_feed_data($feed_url, $delimiter) {
-        // Check cache first
         $cache_key = 'yoco_feed_' . md5($feed_url);
         $cached_data = get_transient($cache_key);
         
@@ -342,7 +284,6 @@ class YoCo_Sync {
             return $cached_data;
         }
         
-        // Download feed
         $response = wp_remote_get($feed_url, array(
             'timeout' => 60,
             'user-agent' => 'YoCo-Backorder/' . YOCO_BACKORDER_VERSION
@@ -357,35 +298,40 @@ class YoCo_Sync {
             throw new Exception(__('Feed is empty', 'yoco-backorder'));
         }
         
-        // Parse CSV
         $lines = str_getcsv($body, "\n");
         if (empty($lines)) {
             throw new Exception(__('No data in feed', 'yoco-backorder'));
         }
         
-        // Parse header
-        $header = str_getcsv($lines[0], $delimiter);
+        $header_raw = str_getcsv($lines[0], $delimiter);
+        $header = array_map(function($col) {
+            return trim($col, '"');
+        }, $header_raw);
+        
+        $header = array_filter($header, function($col) {
+            return !empty(trim($col));
+        });
+        $header = array_values($header);
+        
         $data = array('header' => $header, 'rows' => array());
         
-        // Parse data rows
         for ($i = 1; $i < count($lines); $i++) {
             if (!empty(trim($lines[$i]))) {
-                $row = str_getcsv($lines[$i], $delimiter);
+                $row_raw = str_getcsv($lines[$i], $delimiter);
+                $row = array_map(function($val) {
+                    return trim($val, '"');
+                }, $row_raw);
+                
                 if (count($row) === count($header)) {
                     $data['rows'][] = array_combine($header, $row);
                 }
             }
         }
         
-        // Cache for 5 minutes
         set_transient($cache_key, $data, 5 * MINUTE_IN_SECONDS);
-        
         return $data;
     }
     
-    /**
-     * Find product in feed data - WITH EAN MATCHING
-     */
     private static function find_product_in_feed($feed_data, $sku, $ean, $settings) {
         $sku_column = $settings['sku_column'];
         $stock_column = $settings['stock_column'];
@@ -397,45 +343,29 @@ class YoCo_Sync {
         
         foreach ($feed_data['rows'] as $row) {
             if ($match_on === 'ean') {
-                // Match on EAN
                 if (!empty($ean) && isset($row[$sku_column]) && $row[$sku_column] === $ean) {
                     return self::parse_stock_info($row, $stock_column);
                 }
             } else {
-                // Match on SKU (default)
                 if (!empty($sku) && isset($row[$sku_column]) && $row[$sku_column] === $sku) {
                     return self::parse_stock_info($row, $stock_column);
                 }
             }
         }
         
-        // Not found in feed
         return array(
             'stock_quantity' => 0,
             'is_available' => false
         );
     }
     
-    /**
-     * Parse stock information from feed row - ROBUST parsing
-     */
     private static function parse_stock_info($row, $stock_column) {
         $stock_quantity = 0;
         
         if (isset($row[$stock_column])) {
             $raw_value = $row[$stock_column];
-            
-            // Remove any non-numeric characters except dot and minus
-            // This handles: "3.0", "357.0", "30>", ">30", "30 stuks", "abc30def"
             $cleaned = preg_replace('/[^0-9.\-]/', '', $raw_value);
-            
-            // Convert to float first (handles decimals), then to int
-            // floatval("3.0") = 3.0 → (int) = 3
-            // floatval("357.0") = 357.0 → (int) = 357
-            // floatval("30") = 30.0 → (int) = 30
             $stock_quantity = (int) floatval($cleaned);
-            
-            // Ensure non-negative (just in case)
             $stock_quantity = max(0, $stock_quantity);
         }
         
@@ -445,9 +375,6 @@ class YoCo_Sync {
         );
     }
     
-    /**
-     * Update supplier stock in database
-     */
     private static function update_supplier_stock($product_id, $supplier_term_id, $stock_info, $sku, $ean) {
         global $wpdb;
         
@@ -480,9 +407,6 @@ class YoCo_Sync {
         return $result !== false;
     }
     
-    /**
-     * Create sync log
-     */
     private static function create_sync_log($supplier_term_id, $sync_type) {
         global $wpdb;
         
@@ -498,9 +422,6 @@ class YoCo_Sync {
         return $wpdb->insert_id;
     }
     
-    /**
-     * Complete sync log
-     */
     private static function complete_sync_log($log_id, $status, $result = null, $error_message = null) {
         global $wpdb;
         
@@ -528,9 +449,6 @@ class YoCo_Sync {
         $wpdb->update($table, $data, array('id' => $log_id));
     }
     
-    /**
-     * Get sync logs
-     */
     public static function get_sync_logs($supplier_term_id = null, $limit = 50) {
         global $wpdb;
         
@@ -547,9 +465,6 @@ class YoCo_Sync {
         );
     }
     
-    /**
-     * Clean old logs
-     */
     public static function clean_old_logs($days = 30) {
         global $wpdb;
         
