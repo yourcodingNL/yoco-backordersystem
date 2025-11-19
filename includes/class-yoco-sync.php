@@ -242,8 +242,8 @@ class YoCo_Sync {
      * Get FTP feed data
      */
     private static function get_ftp_feed_data($settings, $delimiter) {
-        // Check cache first
-        $cache_key = 'yoco_ftp_feed_' . md5($settings['ftp_host'] . $settings['ftp_path']);
+        // Check cache first - INCLUDE USERNAME to prevent cache collision between different FTP users on same host
+        $cache_key = 'yoco_ftp_feed_' . md5($settings['ftp_host'] . $settings['ftp_user'] . $settings['ftp_path']);
         $cached_data = get_transient($cache_key);
         
         if ($cached_data !== false) {
@@ -417,40 +417,32 @@ class YoCo_Sync {
     }
     
     /**
-     * Parse stock information from feed row
+     * Parse stock information from feed row - ROBUST parsing
      */
     private static function parse_stock_info($row, $stock_column) {
         $stock_quantity = 0;
         
         if (isset($row[$stock_column])) {
-            // Clean the stock value - remove all text, keep only numbers
             $raw_value = $row[$stock_column];
-            $clean_value = self::clean_stock_value($raw_value);
-            $stock_quantity = intval($clean_value);
+            
+            // Remove any non-numeric characters except dot and minus
+            // This handles: "3.0", "357.0", "30>", ">30", "30 stuks", "abc30def"
+            $cleaned = preg_replace('/[^0-9.\-]/', '', $raw_value);
+            
+            // Convert to float first (handles decimals), then to int
+            // floatval("3.0") = 3.0 → (int) = 3
+            // floatval("357.0") = 357.0 → (int) = 357
+            // floatval("30") = 30.0 → (int) = 30
+            $stock_quantity = (int) floatval($cleaned);
+            
+            // Ensure non-negative (just in case)
+            $stock_quantity = max(0, $stock_quantity);
         }
         
         return array(
             'stock_quantity' => $stock_quantity,
             'is_available' => $stock_quantity > 0
         );
-    }
-    
-    /**
-     * Clean stock value - remove text, keep only numbers
-     */
-    private static function clean_stock_value($value) {
-        // Convert to string if not already
-        $value = (string) $value;
-        
-        // Remove all non-digit characters (letters, spaces, symbols)
-        $cleaned = preg_replace('/[^0-9]/', '', $value);
-        
-        // If empty after cleaning, return 0
-        if (empty($cleaned)) {
-            return 0;
-        }
-        
-        return intval($cleaned);
     }
     
     /**
