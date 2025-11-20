@@ -1,6 +1,6 @@
 <?php
 /**
- * Dashboard Admin Template
+ * Dashboard Admin Template - WITH CACHE CLEAR BUTTON
  */
 
 if (!defined('ABSPATH')) {
@@ -154,12 +154,15 @@ $products_with_stock = $wpdb->get_var("SELECT COUNT(DISTINCT product_id) FROM {$
         </div>
     </div>
     
-    <!-- Quick Actions -->
+    <!-- Quick Actions - WITH CACHE CLEAR BUTTON -->
     <div class="card">
         <h2><?php _e('Quick Actions', 'yoco-backorder'); ?></h2>
-        <div style="display: flex; gap: 15px; align-items: center;">
+        <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
             <button id="sync-all-suppliers" class="button button-primary">
                 <?php _e('Sync All Active Suppliers', 'yoco-backorder'); ?>
+            </button>
+            <button id="clear-feed-cache" class="button button-secondary">
+                🗑️ <?php _e('Clear Feed Cache', 'yoco-backorder'); ?>
             </button>
             <button id="test-cron-now" class="button button-secondary">
                 <?php _e('Test Cron Now', 'yoco-backorder'); ?>
@@ -167,8 +170,11 @@ $products_with_stock = $wpdb->get_var("SELECT COUNT(DISTINCT product_id) FROM {$
             <button id="clean-logs" class="button button-secondary">
                 <?php _e('Clean Old Logs', 'yoco-backorder'); ?>
             </button>
-            <div id="quick-actions-result" style="margin-left: 10px;"></div>
+            <div id="quick-actions-result" style="margin-left: 10px; flex: 1;"></div>
         </div>
+        <p class="description" style="margin-top: 10px;">
+            💡 <strong>Tip:</strong> <?php _e('Clear feed cache if you updated code or feeds are not syncing correctly.', 'yoco-backorder'); ?>
+        </p>
     </div>
     
     <!-- Recent Sync Logs -->
@@ -377,6 +383,42 @@ jQuery(document).ready(function($) {
             },
             complete: function() {
                 button.prop('disabled', false).text('<?php esc_js(_e("Sync All Active Suppliers", "yoco-backorder")); ?>');
+            }
+        });
+    });
+    
+    // Clear feed cache - NEW!
+    $('#clear-feed-cache').on('click', function() {
+        var button = $(this);
+        
+        if (!confirm('<?php esc_js(_e("This will clear all cached feed data. Next sync will re-download all feeds. Continue?", "yoco-backorder")); ?>')) {
+            return;
+        }
+        
+        button.prop('disabled', true).text('<?php esc_js(_e("Clearing...", "yoco-backorder")); ?>');
+        
+        $.ajax({
+            url: yoco_admin.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'yoco_clear_feed_cache',
+                nonce: yoco_admin.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    $('#quick-actions-result').html('<span style="color: #46b450;">✅ ' + response.message + '</span>');
+                    setTimeout(function() {
+                        $('#quick-actions-result').fadeOut();
+                    }, 5000);
+                } else {
+                    $('#quick-actions-result').html('<span style="color: #dc3232;">❌ Error: ' + response.message + '</span>');
+                }
+            },
+            error: function() {
+                $('#quick-actions-result').html('<span style="color: #dc3232;">❌ AJAX error occurred</span>');
+            },
+            complete: function() {
+                button.prop('disabled', false).text('🗑️ <?php esc_js(_e("Clear Feed Cache", "yoco-backorder")); ?>');
             }
         });
     });

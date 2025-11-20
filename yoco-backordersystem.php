@@ -196,8 +196,14 @@ add_action('init', function() {
                 exit;
             }
             set_transient('yoco_cron_running', true, 600);
-            
-            // Disable all output buffering
+
+// CLEAR ALL FEED CACHES FIRST - Forces fresh download
+global $wpdb;
+$wpdb->query("DELETE FROM {$wpdb->options} 
+              WHERE option_name LIKE '_transient_yoco_feed_%' 
+              OR option_name LIKE '_transient_yoco_ftp_feed_%'");
+
+// Disable all output buffering
             while (ob_get_level()) ob_end_clean();
             
             // Send headers

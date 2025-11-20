@@ -1,6 +1,6 @@
 <?php
 /**
- * YoCo Backorder System Admin
+ * YoCo Backorder System Admin - WITH CACHE CLEAR
  */
 
 if (!defined('ABSPATH')) {
@@ -54,6 +54,7 @@ class YoCo_Admin {
         add_action('wp_ajax_yoco_test_cron_now', array($this, 'ajax_test_cron_now'));
         add_action('wp_ajax_yoco_clear_cron_logs', array($this, 'ajax_clear_cron_logs'));
         add_action('wp_ajax_yoco_cron_heartbeat', array($this, 'ajax_cron_heartbeat'));
+        add_action('wp_ajax_yoco_clear_feed_cache', array($this, 'ajax_clear_feed_cache')); // NEW!
     }
     
     /**
@@ -607,5 +608,34 @@ class YoCo_Admin {
                 'debug' => 'Heartbeat active (normal mode)'
             ));
         }
+    }
+    
+    /**
+     * AJAX: Clear feed cache - NEW FUNCTION!
+     */
+    public function ajax_clear_feed_cache() {
+        check_ajax_referer('yoco_admin_nonce', 'nonce');
+        
+        if (!current_user_can('manage_woocommerce')) {
+            wp_die(__('You do not have sufficient permissions to access this page.', 'yoco-backorder'));
+        }
+        
+        global $wpdb;
+        
+        // Delete all YoCo feed transients (both URL and FTP)
+        $sql = "DELETE FROM {$wpdb->options} 
+                WHERE option_name LIKE '_transient_yoco_feed_%' 
+                OR option_name LIKE '_transient_timeout_yoco_feed_%'
+                OR option_name LIKE '_transient_yoco_ftp_feed_%'
+                OR option_name LIKE '_transient_timeout_yoco_ftp_feed_%'";
+        
+        $deleted = $wpdb->query($sql);
+        
+        error_log("YOCO: Cleared {$deleted} feed cache entries via admin");
+        
+        wp_send_json(array(
+            'success' => true,
+            'message' => sprintf(__('Successfully cleared %d feed cache entries. All feeds will be re-downloaded on next sync.', 'yoco-backorder'), $deleted / 2) // Divide by 2 because each transient has a timeout entry
+        ));
     }
 }

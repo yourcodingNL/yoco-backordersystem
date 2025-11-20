@@ -168,7 +168,7 @@ class YoCo_Supplier {
         
         // Download and parse CSV
         $response = wp_remote_get($feed_url, array(
-            'timeout' => 30,
+            'timeout' => 120,
             'user-agent' => 'YoCo-Backorder/' . YOCO_BACKORDER_VERSION
         ));
         
