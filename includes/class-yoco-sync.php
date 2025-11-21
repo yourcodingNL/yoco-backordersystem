@@ -292,129 +292,140 @@ class YoCo_Sync {
      * 4. FIXED: Proper trailing comma handling for BOTH header AND data rows
      */
     private static function get_feed_data($feed_url, $delimiter) {
-        $cache_key = 'yoco_feed_' . md5($feed_url);
-        $cached_data = get_transient($cache_key);
-        
-        if ($cached_data !== false) {
-            error_log("YOCO: Using cached feed data for {$feed_url}");
-            return $cached_data;
-        }
-        
-        error_log("YOCO: Downloading fresh feed from {$feed_url}");
-        
-        // FIX 1: INCREASED TIMEOUT TO 120 SECONDS
-        $response = wp_remote_get($feed_url, array(
-            'timeout' => 120,
-            'user-agent' => 'YoCo-Backorder/' . YOCO_BACKORDER_VERSION,
-            'sslverify' => false
-        ));
-        
-        if (is_wp_error($response)) {
-            $error_msg = $response->get_error_message();
-            
-            if (strpos($error_msg, 'timed out') !== false || strpos($error_msg, 'timeout') !== false) {
-                throw new Exception(sprintf(
-                    __('Feed download timeout after 120 seconds. Feed may be too large or server too slow. Original error: %s', 'yoco-backorder'),
-                    $error_msg
-                ));
-            }
-            
-            throw new Exception(sprintf(__('Failed to download feed: %s', 'yoco-backorder'), $error_msg));
-        }
-        
-        $body = wp_remote_retrieve_body($response);
-        if (empty($body)) {
-            throw new Exception(__('Feed is empty', 'yoco-backorder'));
-        }
-        
-        $body_size = strlen($body);
-        error_log("YOCO: Downloaded feed size: " . round($body_size / 1024 / 1024, 2) . " MB");
-        
-        $lines = str_getcsv($body, "\n");
-        if (empty($lines)) {
-            throw new Exception(__('No data in feed', 'yoco-backorder'));
-        }
-        
-        error_log("YOCO: Feed has " . count($lines) . " lines");
-        
-        // FIX 2 & 4: Parse header and remove trailing empty columns
-        $header_raw = str_getcsv($lines[0], $delimiter);
-        
-        // Remove TRAILING empty values (caused by trailing comma like: "col1","col2",)
-        // But keep empty values in the MIDDLE (they might be intentional)
-        $header = $header_raw;
-        while (count($header) > 0 && trim(end($header)) === '') {
-            array_pop($header);
-        }
-        
-        // Also trim whitespace from column names
-        $header = array_map('trim', $header);
-        
-        error_log("YOCO: Feed header (" . count($header) . " columns): " . implode(', ', $header));
-        error_log("YOCO: Original header had " . count($header_raw) . " columns (removed " . (count($header_raw) - count($header)) . " trailing empty)");
-        
-        $data = array('header' => $header, 'rows' => array());
-        
-        // Parse data rows
-        $skipped_rows = 0;
-        for ($i = 1; $i < count($lines); $i++) {
-            if (empty(trim($lines[$i]))) continue;
-            
-            $row_raw = str_getcsv($lines[$i], $delimiter);
-            
-            // FIX 4: Remove TRAILING empty values from data rows (same as header)
-            $row = $row_raw;
-            while (count($row) > 0 && trim(end($row)) === '') {
-                array_pop($row);
-            }
-            
-            // Now check if row matches header column count
-            if (count($row) === count($header)) {
-                $data['rows'][] = array_combine($header, $row);
-            } else {
-                $skipped_rows++;
-                if ($skipped_rows <= 3) {
-                    // Log first few mismatches for debugging
-                    error_log("YOCO: Row $i column mismatch - has " . count($row) . " columns, expected " . count($header));
-                    error_log("YOCO: Row data: " . implode('|', array_slice($row, 0, 10))); // First 10 columns
-                }
-            }
-        }
-        
-        error_log("YOCO: Successfully parsed " . count($data['rows']) . " data rows" . ($skipped_rows > 0 ? " (skipped {$skipped_rows} mismatched rows)" : ""));
-        
-        // Cache for 5 minutes
-        set_transient($cache_key, $data, 5 * MINUTE_IN_SECONDS);
-        
-        return $data;
+    $cache_key = 'yoco_feed_' . md5($feed_url);
+    $cached_data = get_transient($cache_key);
+    
+    if ($cached_data !== false) {
+        error_log("YOCO: Using cached feed data for {$feed_url}");
+        return $cached_data;
     }
     
-    private static function find_product_in_feed($feed_data, $sku, $ean, $settings) {
-        $sku_column = $settings['sku_column'];
-        $stock_column = $settings['stock_column'];
-        $match_on = $settings['match_on'] ?? 'sku';
+    error_log("YOCO: Downloading fresh feed from {$feed_url}");
+    
+    $response = wp_remote_get($feed_url, array(
+        'timeout' => 120,
+        'user-agent' => 'YoCo-Backorder/' . YOCO_BACKORDER_VERSION,
+        'sslverify' => false
+    ));
+    
+    if (is_wp_error($response)) {
+        $error_msg = $response->get_error_message();
         
-        if (empty($sku_column) || empty($stock_column)) {
-            throw new Exception(__('SKU or Stock column not configured', 'yoco-backorder'));
+        if (strpos($error_msg, 'timed out') !== false || strpos($error_msg, 'timeout') !== false) {
+            throw new Exception(sprintf(
+                __('Feed download timeout after 120 seconds. Feed may be too large or server too slow. Original error: %s', 'yoco-backorder'),
+                $error_msg
+            ));
         }
         
-        foreach ($feed_data['rows'] as $row) {
-            if ($match_on === 'ean') {
-                if (!empty($ean) && isset($row[$sku_column]) && $row[$sku_column] === $ean) {
-                    return self::parse_stock_info($row, $stock_column);
-                }
-            } else {
-                if (!empty($sku) && isset($row[$sku_column]) && $row[$sku_column] === $sku) {
-                    return self::parse_stock_info($row, $stock_column);
-                }
+        throw new Exception(sprintf(__('Failed to download feed: %s', 'yoco-backorder'), $error_msg));
+    }
+    
+    $body = wp_remote_retrieve_body($response);
+    if (empty($body)) {
+        throw new Exception(__('Feed is empty', 'yoco-backorder'));
+    }
+    
+    $body_size = strlen($body);
+    error_log("YOCO: Downloaded feed size: " . round($body_size / 1024 / 1024, 2) . " MB");
+    
+    // FIX: Use proper CSV parsing that respects quotes
+    $temp_file = tempnam(sys_get_temp_dir(), 'yoco_csv_');
+    file_put_contents($temp_file, $body);
+    
+    $handle = fopen($temp_file, 'r');
+    if (!$handle) {
+        unlink($temp_file);
+        throw new Exception(__('Failed to parse CSV', 'yoco-backorder'));
+    }
+    
+    // Read header
+    $header = fgetcsv($handle, 0, $delimiter);
+    if (!$header) {
+        fclose($handle);
+        unlink($temp_file);
+        throw new Exception(__('CSV header is missing', 'yoco-backorder'));
+    }
+    
+    // Remove trailing empty columns from header
+    while (count($header) > 0 && trim(end($header)) === '') {
+        array_pop($header);
+    }
+    
+    // Trim whitespace from column names
+    $header = array_map('trim', $header);
+    $header_count = count($header);
+    
+    error_log("YOCO: Feed header ({$header_count} columns): " . implode(', ', $header));
+    
+    // Read data rows
+    $data = array('header' => $header, 'rows' => array());
+    $skipped_rows = 0;
+    $row_num = 1;
+    
+    while (($row = fgetcsv($handle, 0, $delimiter)) !== false) {
+        $row_num++;
+        
+        // Skip empty rows
+        if (empty(array_filter($row))) {
+            continue;
+        }
+        
+        // Remove trailing empty values if row has more columns than header
+        if (count($row) > $header_count) {
+            while (count($row) > $header_count && trim(end($row)) === '') {
+                array_pop($row);
             }
         }
         
-        return array(
-            'stock_quantity' => 0,
-            'is_available' => false
-        );
+        // Check if row matches header count
+        if (count($row) === $header_count) {
+            $data['rows'][] = array_combine($header, $row);
+        } else {
+            $skipped_rows++;
+            if ($skipped_rows <= 3) {
+                error_log("YOCO: Row {$row_num} column mismatch - has " . count($row) . " columns, expected {$header_count}");
+            }
+        }
     }
+    
+    fclose($handle);
+    unlink($temp_file);
+    
+    error_log("YOCO: Successfully parsed " . count($data['rows']) . " data rows" . ($skipped_rows > 0 ? " (skipped {$skipped_rows} mismatched rows)" : ""));
+    
+    // Cache for 5 minutes
+    set_transient($cache_key, $data, 5 * MINUTE_IN_SECONDS);
+    
+    return $data;
+}
+    
+    private static function find_product_in_feed($feed_data, $sku, $ean, $settings) {
+    $sku_column = $settings['sku_column'];
+    $stock_column = $settings['stock_column'];
+    $match_on = $settings['match_on'] ?? 'sku';
+    
+    if (empty($sku_column) || empty($stock_column)) {
+        throw new Exception(__('SKU or Stock column not configured', 'yoco-backorder'));
+    }
+    
+    foreach ($feed_data['rows'] as $row) {
+        if ($match_on === 'ean') {
+            if (!empty($ean) && isset($row[$sku_column]) && $row[$sku_column] === $ean) {
+                return self::parse_stock_info($row, $stock_column);
+            }
+        } else {
+            if (!empty($sku) && isset($row[$sku_column]) && $row[$sku_column] === $sku) {
+                return self::parse_stock_info($row, $stock_column);
+            }
+        }
+    }
+    
+    return array(
+        'stock_quantity' => 0,
+        'is_available' => false
+    );
+}
     
     private static function parse_stock_info($row, $stock_column) {
         $stock_quantity = 0;
